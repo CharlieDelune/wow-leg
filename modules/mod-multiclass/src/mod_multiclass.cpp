@@ -125,8 +125,7 @@ public:
             return true;
         }
 
-        Multiclass::ActivateClass(player, slot, classId);
-        Multiclass::SaveState(player->GetGUID());
+        Multiclass::SwapSlotClass(player, slot, classId);
         handler->PSendSysMessage("Slot {} set to class {} (level {}).", slot, classId, state.slots[slot].level);
         return true;
     }

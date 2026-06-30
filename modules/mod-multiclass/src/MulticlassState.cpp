@@ -207,4 +207,44 @@ namespace Multiclass
 
         state.ledger[classId] = std::move(spells);
     }
+
+    void SwapSlotClass(Player* player, uint8 slot, uint8 newClassId)
+    {
+        PlayerState& state = GetOrCreateState(player);
+        uint8 const oldClassId = state.slots[slot].classId;
+
+        if (oldClassId != 0 && oldClassId != newClassId)
+        {
+            // Persist the outgoing class's current state so its benched row is up to date.
+            SaveState(player->GetGUID());
+
+            // Build the other still-active classes' ledgers (everything except this slot).
+            std::vector<std::vector<uint32>> otherLedgers;
+            for (uint8 s = 0; s < MAX_CLASS_SLOTS; ++s)
+            {
+                if (s == slot)
+                    continue;
+                uint8 const cid = state.slots[s].classId;
+                if (cid == 0)
+                    continue;
+                auto itr = state.ledger.find(cid);
+                if (itr != state.ledger.end())
+                    otherLedgers.emplace_back(itr->second.begin(), itr->second.end());
+            }
+
+            // Remove exactly the outgoing class's spells, keeping any a still-active class shares.
+            g_inOrchestration = true;
+            auto outItr = state.ledger.find(oldClassId);
+            if (outItr != state.ledger.end())
+                for (uint32 spellId : outItr->second)
+                    if (!AnotherActiveClassOwns(spellId, otherLedgers))
+                        player->removeSpell(spellId, SPEC_MASK_ALL, false);
+            g_inOrchestration = false;
+
+            state.ledger.erase(oldClassId);
+        }
+
+        ActivateClass(player, slot, newClassId);
+        SaveState(player->GetGUID());
+    }
 }
