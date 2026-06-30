@@ -86,6 +86,12 @@ public:
         if (!player)
             return false;
 
+        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+        {
+            handler->SendErrorMessage("The multiclass module is disabled.");
+            return true;
+        }
+
         Multiclass::PlayerState& state = Multiclass::GetOrCreateState(player);
         handler->PSendSysMessage("Multiclass (render class {}, display level {}):",
             state.renderClass, Multiclass::ComputeDisplayLevel(state.slots));
@@ -105,6 +111,12 @@ public:
         Player* player = handler->GetPlayer();
         if (!player)
             return false;
+
+        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+        {
+            handler->SendErrorMessage("The multiclass module is disabled.");
+            return true;
+        }
 
         Multiclass::PlayerState& state = Multiclass::GetOrCreateState(player);
         if (!Multiclass::CanAssignClass(state.slots, slot, classId))
@@ -127,6 +139,12 @@ public:
         Player* player = handler->GetPlayer();
         if (!player)
             return false;
+
+        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+        {
+            handler->SendErrorMessage("The multiclass module is disabled.");
+            return true;
+        }
 
         if (slot >= Multiclass::MAX_CLASS_SLOTS || level < 1 || level > 80)
         {
@@ -152,6 +170,12 @@ public:
         Player* player = handler->GetPlayer();
         if (!player)
             return false;
+
+        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+        {
+            handler->SendErrorMessage("The multiclass module is disabled.");
+            return true;
+        }
 
         if (slot >= Multiclass::MAX_CLASS_SLOTS)
         {
