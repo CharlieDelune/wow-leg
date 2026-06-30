@@ -17,20 +17,39 @@
 
 #include "Config.h"
 #include "Log.h"
+#include "MulticlassState.h"
 #include "Player.h"
 #include "PlayerScript.h"
 
 class multiclass_playerscript : public PlayerScript
 {
 public:
-    multiclass_playerscript() : PlayerScript("multiclass_playerscript", { PLAYERHOOK_ON_LOGIN }) { }
+    multiclass_playerscript() : PlayerScript("multiclass_playerscript",
+        { PLAYERHOOK_ON_LOGIN, PLAYERHOOK_ON_LOGOUT, PLAYERHOOK_ON_SAVE }) { }
 
     void OnPlayerLogin(Player* player) override
     {
         if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
             return;
 
+        Multiclass::LoadState(player);
         LOG_INFO("module.multiclass", "mod-multiclass loaded for player {}", player->GetGUID().ToString());
+    }
+
+    void OnPlayerSave(Player* player) override
+    {
+        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+            return;
+
+        Multiclass::SaveState(player->GetGUID());
+    }
+
+    void OnPlayerLogout(Player* player) override
+    {
+        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+            return;
+
+        Multiclass::UnloadState(player->GetGUID());
     }
 };
 
