@@ -75,3 +75,48 @@ TEST(MulticlassLogicTest, CanAssignClass_rejectsDuplicatesAndInvalid)
     EXPECT_TRUE(CanAssignClass(slots, 2, 8));    // mage into empty slot 2
     EXPECT_TRUE(CanAssignClass(slots, 0, 5));    // replacing own slot with a new class
 }
+
+TEST(MulticlassLogicTest, ClaimingClasses_maskZeroIsOwnedByNobody)
+{
+    SlotArray slots = MakeSlots({ 1, 25, 0 }, { 8, 10, 0 });  // warrior + mage active
+    EXPECT_TRUE(ClaimingClasses(slots, 0u).empty());          // general/profession/racial
+}
+
+TEST(MulticlassLogicTest, ClaimingClasses_singleClassSpell)
+{
+    SlotArray slots = MakeSlots({ 1, 25, 0 }, { 8, 10, 0 });  // warrior(1) + mage(8)
+    uint32 const mageMask = 1u << (8 - 1);
+    std::vector<uint8> owners = ClaimingClasses(slots, mageMask);
+    ASSERT_EQ(owners.size(), 1u);
+    EXPECT_EQ(owners[0], 8);
+}
+
+TEST(MulticlassLogicTest, ClaimingClasses_sharedSpellOwnedByEachActiveMatch)
+{
+    SlotArray slots = MakeSlots({ 1, 25, 0 }, { 4, 10, 0 }, { 8, 18, 0 });  // warrior + rogue + mage
+    uint32 const warriorRogueMask = (1u << (1 - 1)) | (1u << (4 - 1));
+    std::vector<uint8> owners = ClaimingClasses(slots, warriorRogueMask);
+    ASSERT_EQ(owners.size(), 2u);
+    EXPECT_EQ(owners[0], 1);
+    EXPECT_EQ(owners[1], 4);
+}
+
+TEST(MulticlassLogicTest, ClaimingClasses_inactiveMaskedClassNotClaimed)
+{
+    SlotArray slots = MakeSlots({ 1, 25, 0 });  // only warrior active
+    uint32 const priestMask = 1u << (5 - 1);    // priest not in any slot
+    EXPECT_TRUE(ClaimingClasses(slots, priestMask).empty());
+}
+
+TEST(MulticlassLogicTest, AnotherActiveClassOwns_detectsSharedOwnership)
+{
+    std::vector<std::vector<uint32>> others = { { 100u, 200u }, { 300u } };
+    EXPECT_TRUE(AnotherActiveClassOwns(200u, others));   // owned by another active class
+    EXPECT_FALSE(AnotherActiveClassOwns(999u, others));  // owned by nobody else -> safe to remove
+}
+
+TEST(MulticlassLogicTest, AnotherActiveClassOwns_emptyIsSafeToRemove)
+{
+    std::vector<std::vector<uint32>> none;
+    EXPECT_FALSE(AnotherActiveClassOwns(100u, none));
+}

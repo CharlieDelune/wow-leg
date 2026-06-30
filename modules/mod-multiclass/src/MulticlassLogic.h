@@ -20,6 +20,7 @@
 
 #include <array>
 #include <cstdint>
+#include <vector>
 #include "Define.h"
 
 namespace Multiclass
@@ -91,6 +92,34 @@ namespace Multiclass
             if (i != slot && slots[i].classId == classId)
                 return false;
         return true;
+    }
+
+    // Which currently-active classes own a spell, given the OR of its SkillLineAbility
+    // class masks (0 = no class-specific entry => general/profession/racial => owned by none).
+    inline std::vector<uint8> ClaimingClasses(SlotArray const& slots, uint32 combinedClassMask)
+    {
+        std::vector<uint8> result;
+        if (combinedClassMask == 0)
+            return result;
+        for (ClassProgress const& cp : slots)
+        {
+            if (cp.classId == 0)
+                continue;
+            if (combinedClassMask & (1u << (cp.classId - 1)))
+                result.push_back(cp.classId);
+        }
+        return result;
+    }
+
+    // Swap-out guard: true if any OTHER active class's ledger still contains the spell,
+    // meaning it must stay on the player rather than be removed.
+    inline bool AnotherActiveClassOwns(uint32 spellId, std::vector<std::vector<uint32>> const& otherActiveClassLedgers)
+    {
+        for (std::vector<uint32> const& ledger : otherActiveClassLedgers)
+            for (uint32 owned : ledger)
+                if (owned == spellId)
+                    return true;
+        return false;
     }
 }
 
