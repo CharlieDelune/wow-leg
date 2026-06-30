@@ -15,11 +15,15 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "Chat.h"
+#include "CommandScript.h"
 #include "Config.h"
 #include "Log.h"
 #include "MulticlassState.h"
 #include "Player.h"
 #include "PlayerScript.h"
+
+using namespace Acore::ChatCommands;
 
 class multiclass_playerscript : public PlayerScript
 {
@@ -53,7 +57,118 @@ public:
     }
 };
 
+class multiclass_commandscript : public CommandScript
+{
+public:
+    multiclass_commandscript() : CommandScript("multiclass_commandscript") { }
+
+    ChatCommandTable GetCommands() const override
+    {
+        static ChatCommandTable mcTable =
+        {
+            { "info",     HandleInfo,     SEC_PLAYER,        Console::No },
+            { "setclass", HandleSetClass, SEC_GAMEMASTER,    Console::No },
+            { "setlevel", HandleSetLevel, SEC_GAMEMASTER,    Console::No },
+            { "unlock",   HandleUnlock,   SEC_GAMEMASTER,    Console::No }
+        };
+
+        static ChatCommandTable commandTable =
+        {
+            { "multiclass", mcTable }
+        };
+
+        return commandTable;
+    }
+
+    static bool HandleInfo(ChatHandler* handler)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+
+        Multiclass::PlayerState& state = Multiclass::GetOrCreateState(player);
+        handler->PSendSysMessage("Multiclass (render class {}, display level {}):",
+            state.renderClass, Multiclass::ComputeDisplayLevel(state.slots));
+
+        for (uint8 slot = 0; slot < Multiclass::MAX_CLASS_SLOTS; ++slot)
+        {
+            Multiclass::ClassProgress const& cp = state.slots[slot];
+            handler->PSendSysMessage("  slot {}: class {} level {} xp {} {}",
+                slot, cp.classId, cp.level, cp.xp, state.unlocked[slot] ? "" : "(locked)");
+        }
+
+        return true;
+    }
+
+    static bool HandleSetClass(ChatHandler* handler, uint8 slot, uint8 classId)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+
+        Multiclass::PlayerState& state = Multiclass::GetOrCreateState(player);
+        if (!Multiclass::CanAssignClass(state.slots, slot, classId))
+        {
+            handler->SendErrorMessage("Invalid slot/class, or class already assigned to another slot.");
+            return true;
+        }
+
+        Multiclass::ClassProgress& cp = state.slots[slot];
+        cp.classId = classId;
+        cp.level = 1;
+        cp.xp = 0;
+        Multiclass::SaveState(player->GetGUID());
+        handler->PSendSysMessage("Slot {} set to class {}.", slot, classId);
+        return true;
+    }
+
+    static bool HandleSetLevel(ChatHandler* handler, uint8 slot, uint8 level)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+
+        if (slot >= Multiclass::MAX_CLASS_SLOTS || level < 1 || level > 80)
+        {
+            handler->SendErrorMessage("Usage: .multiclass setlevel <slot 0-2> <level 1-80>");
+            return true;
+        }
+
+        Multiclass::PlayerState& state = Multiclass::GetOrCreateState(player);
+        if (state.slots[slot].classId == 0)
+        {
+            handler->SendErrorMessage("Slot {} is empty.", slot);
+            return true;
+        }
+
+        state.slots[slot].level = level;
+        Multiclass::SaveState(player->GetGUID());
+        handler->PSendSysMessage("Slot {} level set to {}.", slot, level);
+        return true;
+    }
+
+    static bool HandleUnlock(ChatHandler* handler, uint8 slot)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+
+        if (slot >= Multiclass::MAX_CLASS_SLOTS)
+        {
+            handler->SendErrorMessage("Usage: .multiclass unlock <slot 0-2>");
+            return true;
+        }
+
+        Multiclass::PlayerState& state = Multiclass::GetOrCreateState(player);
+        state.unlocked[slot] = true;
+        Multiclass::SaveState(player->GetGUID());
+        handler->PSendSysMessage("Slot {} unlocked.", slot);
+        return true;
+    }
+};
+
 void Addmod_multiclassScripts()
 {
     new multiclass_playerscript();
+    new multiclass_commandscript();
 }
