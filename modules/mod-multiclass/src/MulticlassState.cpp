@@ -102,13 +102,9 @@ namespace Multiclass
 
         uint32 const low = guid.GetCounter();
         CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
+
+        // Slots are a fixed 0..2 set and always fully rewritten.
         trans->Append(Acore::StringFormat("DELETE FROM `character_multiclass_slot` WHERE `guid` = {}", low));
-        // NOTE (foundation): per-class rows are currently slot-coupled — SaveState prunes any
-        // character_multiclass_class row whose classId is not in an active slot. This is correct
-        // while there is no swap/bench (setclass resets progression). The gameplay/swap plan MUST
-        // change this to an independent per-class upsert that preserves benched-class level/xp,
-        // or a removed class will lose its remembered progression on the next save.
-        trans->Append(Acore::StringFormat("DELETE FROM `character_multiclass_class` WHERE `guid` = {}", low));
 
         for (uint8 slot = 0; slot < MAX_CLASS_SLOTS; ++slot)
         {
@@ -117,10 +113,13 @@ namespace Multiclass
                 "INSERT INTO `character_multiclass_slot` (`guid`, `slot`, `classId`, `unlocked`) VALUES ({}, {}, {}, {})",
                 low, slot, cp.classId, state->unlocked[slot] ? 1 : 0));
 
+            // Per-class progression is upserted independently so a benched class
+            // (one no longer in any slot) keeps its remembered row instead of being pruned.
             if (cp.classId != 0)
                 trans->Append(Acore::StringFormat(
-                    "INSERT INTO `character_multiclass_class` (`guid`, `classId`, `level`, `xp`) VALUES ({}, {}, {}, {})",
-                    low, cp.classId, cp.level, cp.xp));
+                    "INSERT INTO `character_multiclass_class` (`guid`, `classId`, `level`, `xp`) VALUES ({}, {}, {}, {}) "
+                    "ON DUPLICATE KEY UPDATE `level` = {}, `xp` = {}",
+                    low, cp.classId, cp.level, cp.xp, cp.level, cp.xp));
         }
 
         CharacterDatabase.CommitTransaction(trans);
