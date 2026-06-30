@@ -16,6 +16,7 @@
  */
 
 #include "MulticlassState.h"
+#include "MulticlassSpells.h"
 #include "DatabaseEnv.h"
 #include "Player.h"
 #include "StringFormat.h"
@@ -24,6 +25,7 @@
 namespace
 {
     std::unordered_map<ObjectGuid, Multiclass::PlayerState> g_states;
+    bool g_inOrchestration = false;  // suppress learn/forget capture during our own grants/removes
 }
 
 namespace Multiclass
@@ -84,6 +86,21 @@ namespace Multiclass
                     }
             } while (result->NextRow());
         }
+
+        // Per-class learned-spell ledger (only for classes currently in a slot).
+        for (ClassProgress const& cp : state.slots)
+        {
+            if (cp.classId == 0)
+                continue;
+            if (QueryResult result = CharacterDatabase.Query(Acore::StringFormat(
+                "SELECT `spellId` FROM `character_multiclass_spell` WHERE `guid` = {} AND `classId` = {}", low, cp.classId)))
+            {
+                do
+                {
+                    state.ledger[cp.classId].insert(result->Fetch()[0].Get<uint32>());
+                } while (result->NextRow());
+            }
+        }
     }
 
     PlayerState& GetOrCreateState(Player* player)
@@ -122,6 +139,23 @@ namespace Multiclass
                     low, cp.classId, cp.level, cp.xp, cp.level, cp.xp));
         }
 
+        for (uint8 slot = 0; slot < MAX_CLASS_SLOTS; ++slot)
+        {
+            uint8 const classId = state->slots[slot].classId;
+            if (classId == 0)
+                continue;
+
+            trans->Append(Acore::StringFormat(
+                "DELETE FROM `character_multiclass_spell` WHERE `guid` = {} AND `classId` = {}", low, classId));
+
+            auto itr = state->ledger.find(classId);
+            if (itr != state->ledger.end())
+                for (uint32 spellId : itr->second)
+                    trans->Append(Acore::StringFormat(
+                        "INSERT INTO `character_multiclass_spell` (`guid`, `classId`, `spellId`) VALUES ({}, {}, {})",
+                        low, classId, spellId));
+        }
+
         CharacterDatabase.CommitTransaction(trans);
     }
 
@@ -129,5 +163,48 @@ namespace Multiclass
     {
         SaveState(guid);
         g_states.erase(guid);
+    }
+
+    void ActivateClass(Player* player, uint8 slot, uint8 classId)
+    {
+        PlayerState& state = GetOrCreateState(player);
+        uint32 const low = player->GetGUID().GetCounter();
+        ClassProgress& cp = state.slots[slot];
+        cp.classId = classId;
+
+        std::unordered_set<uint32> spells;
+
+        // Remembered class? Restore its level/xp and exact spellbook.
+        if (QueryResult clsRow = CharacterDatabase.Query(Acore::StringFormat(
+            "SELECT `level`, `xp` FROM `character_multiclass_class` WHERE `guid` = {} AND `classId` = {}", low, classId)))
+        {
+            Field* f = clsRow->Fetch();
+            cp.level = f[0].Get<uint8>();
+            cp.xp = f[1].Get<uint32>();
+
+            if (QueryResult spellRows = CharacterDatabase.Query(Acore::StringFormat(
+                "SELECT `spellId` FROM `character_multiclass_spell` WHERE `guid` = {} AND `classId` = {}", low, classId)))
+            {
+                do
+                {
+                    spells.insert(spellRows->Fetch()[0].Get<uint32>());
+                } while (spellRows->NextRow());
+            }
+        }
+        else
+        {
+            // First time this class is assigned: fresh start + creation loadout.
+            cp.level = 1;
+            cp.xp = 0;
+            for (uint32 spellId : StartingSpellsFor(player->getRace(), classId))
+                spells.insert(spellId);
+        }
+
+        g_inOrchestration = true;
+        for (uint32 spellId : spells)
+            player->learnSpell(spellId, false);
+        g_inOrchestration = false;
+
+        state.ledger[classId] = std::move(spells);
     }
 }

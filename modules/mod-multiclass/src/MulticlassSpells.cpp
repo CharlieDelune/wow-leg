@@ -15,33 +15,21 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef MOD_MULTICLASS_STATE_H
-#define MOD_MULTICLASS_STATE_H
-
-#include "MulticlassLogic.h"
-#include "ObjectGuid.h"
-#include <array>
-#include <unordered_map>
-#include <unordered_set>
-
-class Player;
+#include "MulticlassSpells.h"
+#include "ObjectMgr.h"
+#include "Player.h"
 
 namespace Multiclass
 {
-    struct PlayerState
+    std::vector<uint32> StartingSpellsFor(uint8 race, uint8 classId)
     {
-        SlotArray slots{};
-        std::array<bool, MAX_CLASS_SLOTS> unlocked{ { true, false, false } };
-        uint8 renderClass = 0;
-        std::unordered_map<uint8, std::unordered_set<uint32>> ledger;  // active classId -> learned class-specific spell IDs
-    };
+        std::vector<uint32> spells;
+        PlayerInfo const* info = sObjectMgr->GetPlayerInfo(race, classId);
+        if (!info)
+            return spells;
 
-    PlayerState& GetOrCreateState(Player* player);
-    PlayerState* FindState(ObjectGuid guid);
-    void LoadState(Player* player);
-    void SaveState(ObjectGuid guid);
-    void UnloadState(ObjectGuid guid);
-    void ActivateClass(Player* player, uint8 slot, uint8 classId);
+        for (uint32 spellId : info->customSpells)
+            spells.push_back(spellId);
+        return spells;
+    }
 }
-
-#endif

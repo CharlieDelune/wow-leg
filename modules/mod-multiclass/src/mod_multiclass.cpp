@@ -125,12 +125,9 @@ public:
             return true;
         }
 
-        Multiclass::ClassProgress& cp = state.slots[slot];
-        cp.classId = classId;
-        cp.level = 1;
-        cp.xp = 0;
+        Multiclass::ActivateClass(player, slot, classId);
         Multiclass::SaveState(player->GetGUID());
-        handler->PSendSysMessage("Slot {} set to class {}.", slot, classId);
+        handler->PSendSysMessage("Slot {} set to class {} (level {}).", slot, classId, state.slots[slot].level);
         return true;
     }
 
