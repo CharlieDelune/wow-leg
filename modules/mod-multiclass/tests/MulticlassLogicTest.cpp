@@ -17,6 +17,7 @@
 
 #include "MulticlassLogic.h"
 #include "gtest/gtest.h"
+#include <unordered_map>
 
 using namespace Multiclass;
 
@@ -204,4 +205,51 @@ TEST(MulticlassLogicTest, AnotherActiveClassOwns_emptyIsSafeToRemove)
 {
     std::vector<std::vector<uint32>> none;
     EXPECT_FALSE(AnotherActiveClassOwns(100u, none));
+}
+
+TEST(MulticlassLogicTest, ActiveClassMask_orsActiveClassBits)
+{
+    EXPECT_EQ(ActiveClassMask(MakeSlots({ 0, 1, 0 })), 0u);                              // none active
+    EXPECT_EQ(ActiveClassMask(MakeSlots({ 1, 40, 0 })), 1u << 0);                        // warrior
+    EXPECT_EQ(ActiveClassMask(MakeSlots({ 1, 40, 0 }, { 8, 2, 0 })), (1u << 0) | (1u << 7)); // warrior + mage
+    EXPECT_EQ(ActiveClassMask(MakeSlots({ 8, 2, 0 }, { 4, 10, 0 }, { 5, 3, 0 })),
+              (1u << 7) | (1u << 3) | (1u << 4));                                         // mage + rogue + priest
+}
+
+TEST(MulticlassLogicTest, ClassLevel_returnsSlotLevelOrZero)
+{
+    SlotArray slots = MakeSlots({ 1, 40, 0 }, { 8, 2, 0 });   // warrior 40, mage 2
+    EXPECT_EQ(ClassLevel(slots, 1), 40u);   // warrior slot level
+    EXPECT_EQ(ClassLevel(slots, 8), 2u);    // mage slot level
+    EXPECT_EQ(ClassLevel(slots, 4), 0u);    // rogue not active
+    EXPECT_EQ(ClassLevel(slots, 0), 0u);    // empty/invalid classId
+}
+
+TEST(MulticlassUnlocked, MaskIsUnionOfPool)
+{
+    std::unordered_map<uint8, Multiclass::ClassProgress> pool;
+    pool[1] = {1, 40, 0};   // Warrior
+    pool[8] = {8, 12, 0};   // Mage
+    // Warrior bit0 (1) | Mage bit7 (128) = 129
+    EXPECT_EQ(Multiclass::UnlockedClassMask(pool), 129u);
+    EXPECT_EQ(Multiclass::UnlockedClassMask({}), 0u);
+}
+
+TEST(MulticlassUnlocked, LevelLookup)
+{
+    std::unordered_map<uint8, Multiclass::ClassProgress> pool;
+    pool[8] = {8, 27, 500};
+    EXPECT_EQ(Multiclass::UnlockedClassLevel(pool, 8), 27);
+    EXPECT_EQ(Multiclass::UnlockedClassLevel(pool, 4), 0);  // not unlocked
+}
+
+TEST(MulticlassUnlocked, ClaimingRangesOverWholePoolDeterministically)
+{
+    std::unordered_map<uint8, Multiclass::ClassProgress> pool;
+    pool[8] = {8, 5, 0};    // Mage
+    pool[1] = {1, 5, 0};    // Warrior
+    // combined mask with Warrior(1)|Mage(128) -> both, ascending classId order
+    std::vector<uint8> got = Multiclass::ClaimingUnlockedClasses(pool, 129u);
+    EXPECT_EQ(got, (std::vector<uint8>{1, 8}));
+    EXPECT_TRUE(Multiclass::ClaimingUnlockedClasses(pool, 0u).empty());  // no class-specific entry
 }

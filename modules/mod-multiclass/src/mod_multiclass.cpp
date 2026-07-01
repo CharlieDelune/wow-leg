@@ -29,9 +29,25 @@ class multiclass_playerscript : public PlayerScript
 {
 public:
     multiclass_playerscript() : PlayerScript("multiclass_playerscript",
-        { PLAYERHOOK_ON_LOGIN, PLAYERHOOK_ON_LOGOUT, PLAYERHOOK_ON_SAVE,
+        { PLAYERHOOK_ON_LOAD_FROM_DB, PLAYERHOOK_ON_LOGIN, PLAYERHOOK_ON_LOGOUT, PLAYERHOOK_ON_SAVE,
           PLAYERHOOK_ON_LEARN_SPELL, PLAYERHOOK_ON_FORGOT_SPELL,
-          PLAYERHOOK_ON_GIVE_EXP }) { }
+          PLAYERHOOK_ON_GIVE_EXP,
+          PLAYERHOOK_ON_GET_EFFECTIVE_CLASS_MASK,
+          PLAYERHOOK_ON_GET_EFFECTIVE_CLASS_LEVEL,
+          PLAYERHOOK_ON_GET_UNLOCKED_CLASS_MASK,
+          PLAYERHOOK_ON_GET_UNLOCKED_CLASS_LEVEL }) { }
+
+    void OnPlayerLoadFromDB(Player* player) override
+    {
+        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+            return;
+
+        // Load slot state BEFORE the core's _LoadSkills / _LoadSpells run (this hook fires earlier in
+        // Player::LoadFromDB). That way GetEffectiveClassMask() already reflects the active off-classes
+        // when the core validates skills/spells, so an active off-class's skill lines and spells survive
+        // the render-class check instead of being deleted. OnPlayerLogin reloads to a clean final state.
+        Multiclass::LoadState(player);
+    }
 
     void OnPlayerLogin(Player* player) override
     {
@@ -92,6 +108,63 @@ public:
         amount = 0;   // suppress the native single-class XP path; the module owns all XP
     }
 
+    void OnPlayerGetEffectiveClassMask(Player const* player, uint32& classMask) override
+    {
+        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+            return;
+
+        Multiclass::PlayerState* state = Multiclass::FindState(player->GetGUID());
+        if (!state)
+            return;
+
+        // Union the active-class bits into the render-class mask (never a narrowing).
+        classMask |= Multiclass::ActiveClassMask(state->slots);
+    }
+
+    void OnPlayerGetEffectiveClassLevel(Player const* player, uint8 classId, uint8& level) override
+    {
+        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+            return;
+
+        Multiclass::PlayerState* state = Multiclass::FindState(player->GetGUID());
+        if (!state)
+            return;
+
+        // Report this class's own slot level; leave the default (displayed level) if it is not
+        // one of the player's active classes.
+        if (uint8 classLevel = Multiclass::ClassLevel(state->slots, classId))
+            level = classLevel;
+    }
+
+    void OnPlayerGetUnlockedClassMask(Player const* player, uint32& classMask) override
+    {
+        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+            return;
+        Multiclass::PlayerState* state = Multiclass::FindState(player->GetGUID());
+        if (!state)
+            return;
+        classMask |= Multiclass::UnlockedClassMask(state->pool);  // never narrows the render class
+    }
+
+    void OnPlayerGetUnlockedClassLevel(Player const* player, uint8 classId, uint8& level) override
+    {
+        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+            return;
+        Multiclass::PlayerState* state = Multiclass::FindState(player->GetGUID());
+        if (!state)
+            return;
+        // Active class: the authoritative live level is the slot (XP routing updates it mid-session,
+        // the pool may be stale until the next save). Benched class: the remembered pool level.
+        for (Multiclass::ClassProgress const& cp : state->slots)
+            if (cp.classId == classId)
+            {
+                level = cp.level;
+                return;
+            }
+        if (uint8 const poolLevel = Multiclass::UnlockedClassLevel(state->pool, classId))
+            level = poolLevel;
+    }
+
     void OnPlayerSave(Player* player) override
     {
         if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
@@ -118,10 +191,11 @@ public:
     {
         static ChatCommandTable mcTable =
         {
-            { "info",     HandleInfo,     SEC_PLAYER,        Console::No },
-            { "setclass", HandleSetClass, SEC_GAMEMASTER,    Console::No },
-            { "setlevel", HandleSetLevel, SEC_GAMEMASTER,    Console::No },
-            { "unlock",   HandleUnlock,   SEC_GAMEMASTER,    Console::No }
+            { "info",        HandleInfo,        SEC_PLAYER,     Console::No },
+            { "setclass",    HandleSetClass,    SEC_GAMEMASTER, Console::No },
+            { "setlevel",    HandleSetLevel,    SEC_GAMEMASTER, Console::No },
+            { "unlock",      HandleUnlock,      SEC_GAMEMASTER, Console::No },
+            { "unlockclass", HandleUnlockClass, SEC_GAMEMASTER, Console::No }
         };
 
         static ChatCommandTable commandTable =
@@ -236,6 +310,29 @@ public:
         state.unlocked[slot] = true;
         Multiclass::SaveState(player->GetGUID());
         handler->PSendSysMessage("Slot {} unlocked.", slot);
+        return true;
+    }
+
+    static bool HandleUnlockClass(ChatHandler* handler, uint8 classId)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+
+        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+        {
+            handler->SendErrorMessage("The multiclass module is disabled.");
+            return true;
+        }
+
+        if (classId == 0 || classId >= MAX_CLASSES)
+        {
+            handler->SendErrorMessage("Usage: .multiclass unlockclass <classId 1-11>");
+            return true;
+        }
+
+        Multiclass::UnlockClass(player, classId);
+        handler->PSendSysMessage("Class {} unlocked (benched). Slot it to make it active.", classId);
         return true;
     }
 };

@@ -319,6 +319,10 @@ public: /* PlayerScript */
     void OnPlayerGiveReputation(Player* player, int32 factionID, float& amount, ReputationSource repSource);
     void OnPlayerLearnSpell(Player* player, uint32 spellID);
     void OnPlayerForgotSpell(Player* player, uint32 spellID);
+    void OnPlayerGetEffectiveClassMask(Player const* player, uint32& classMask);
+    void OnPlayerGetEffectiveClassLevel(Player const* player, uint8 classId, uint8& level);
+    void OnPlayerGetUnlockedClassMask(Player const* player, uint32& classMask);
+    void OnPlayerGetUnlockedClassLevel(Player const* player, uint8 classId, uint8& level);
     void OnPlayerDuelRequest(Player* target, Player* challenger);
     void OnPlayerDuelStart(Player* player1, Player* player2);
     void OnPlayerDuelEnd(Player* winner, Player* loser, DuelCompleteType type);

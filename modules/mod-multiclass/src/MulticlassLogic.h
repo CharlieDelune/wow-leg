@@ -18,8 +18,10 @@
 #ifndef MOD_MULTICLASS_LOGIC_H
 #define MOD_MULTICLASS_LOGIC_H
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <unordered_map>
 #include <vector>
 #include "Define.h"
 
@@ -49,6 +51,29 @@ namespace Multiclass
             if (slot.classId != 0)
                 ++count;
         return count;
+    }
+
+    // Combined class mask of the active (classId != 0) slots: OR of 1 << (classId - 1).
+    // The union with the render class is applied by the caller (the hook ORs this into
+    // getClassMask()), so trainer / spell-fit gating never regresses the render class.
+    inline uint32 ActiveClassMask(SlotArray const& slots)
+    {
+        uint32 mask = 0;
+        for (ClassProgress const& slot : slots)
+            if (slot.classId != 0)
+                mask |= 1u << (slot.classId - 1);
+        return mask;
+    }
+
+    // Level of the active slot holding classId, or 0 if no active slot holds it.
+    inline uint8 ClassLevel(SlotArray const& slots, uint8 classId)
+    {
+        if (classId == 0)
+            return 0;
+        for (ClassProgress const& slot : slots)
+            if (slot.classId == classId)
+                return slot.level;
+        return 0;
     }
 
     inline uint8 ComputeDisplayLevel(SlotArray const& slots)
@@ -151,6 +176,40 @@ namespace Multiclass
             if (combinedClassMask & (1u << (cp.classId - 1)))
                 result.push_back(cp.classId);
         }
+        return result;
+    }
+
+    // OR of 1 << (classId - 1) over every unlocked class (the full pool, active + benched).
+    // The render class is unioned by the caller's getClassMask() seam, exactly like ActiveClassMask.
+    inline uint32 UnlockedClassMask(std::unordered_map<uint8, ClassProgress> const& pool)
+    {
+        uint32 mask = 0;
+        for (auto const& entry : pool)
+            if (entry.first != 0)
+                mask |= 1u << (entry.first - 1);
+        return mask;
+    }
+
+    // Remembered level of an unlocked class, or 0 if the class is not unlocked.
+    inline uint8 UnlockedClassLevel(std::unordered_map<uint8, ClassProgress> const& pool, uint8 classId)
+    {
+        auto itr = pool.find(classId);
+        return itr != pool.end() ? itr->second.level : uint8(0);
+    }
+
+    // Which unlocked classes (active or benched) own a spell, given the OR of its SkillLineAbility
+    // class masks (0 == no class-specific entry => owned by none). Mirrors ClaimingClasses but ranges
+    // over the full pool; returned ascending by classId for determinism.
+    inline std::vector<uint8> ClaimingUnlockedClasses(
+        std::unordered_map<uint8, ClassProgress> const& pool, uint32 combinedClassMask)
+    {
+        std::vector<uint8> result;
+        if (combinedClassMask == 0)
+            return result;
+        for (auto const& entry : pool)
+            if (entry.first != 0 && (combinedClassMask & (1u << (entry.first - 1))))
+                result.push_back(entry.first);
+        std::sort(result.begin(), result.end());
         return result;
     }
 

@@ -47,6 +47,7 @@
 
 struct CreatureTemplate;
 struct Mail;
+struct SkillRaceClassInfoEntry;
 struct TrainerSpell;
 struct VendorItem;
 
@@ -1709,6 +1710,41 @@ public:
     [[nodiscard]] bool HasSpell(uint32 spell) const override;
     [[nodiscard]] bool HasActiveSpell(uint32 spell) const;            // show in spellbook
     [[nodiscard]] bool IsSpellFitByClassAndRace(uint32 spell_id) const;
+    // Same fitness check as IsSpellFitByClassAndRace, but resolved against the player's UNLOCKED
+    // classes (GetUnlockedClassMask()) rather than the currently-active effective classes. Used by
+    // the trainer so a benched off-class's spells remain trainable while it is inactive.
+    [[nodiscard]] bool IsSpellTrainable(uint32 spell_id) const;
+    [[nodiscard]] uint32 GetEffectiveClassMask() const;
+    [[nodiscard]] uint8 GetEffectiveClassLevel(uint8 classId) const;
+    [[nodiscard]] uint8 GetEffectiveClassLevelForSpell(uint32 spell_id) const;
+    // Mask of the player's UNLOCKED classes (active + benched, e.g. multiclass), or just the render
+    // class for a non-multiclass character. Distinct from GetEffectiveClassMask(), which is only the
+    // currently-ACTIVE classes; this is the wider "ever unlocked" set.
+    [[nodiscard]] uint32 GetUnlockedClassMask() const;
+    // Level of an unlocked class (the active slot if currently active, else the remembered benched
+    // level), or GetLevel() for a non-multiclass character.
+    [[nodiscard]] uint8 GetUnlockedClassLevel(uint8 classId) const;
+    // Same as GetEffectiveClassLevelForSpell, but resolves owners against GetUnlockedClassMask() and
+    // gates on GetUnlockedClassLevel() per owning class. Used by the trainer alongside
+    // IsSpellTrainable so a benched off-class's spells stay level-gated on that class, not on
+    // whichever class currently happens to be active.
+    [[nodiscard]] uint8 GetUnlockedClassLevelForSpell(uint32 spell_id) const;
+    // SkillRaceClassInfo for `skill` under any of the player's EFFECTIVE classes (render class plus
+    // any active off-classes), or nullptr if the skill is valid for none. Reduces exactly to
+    // GetSkillRaceClassInfo(skill, getRace(), getClass()) for a single-class character. Used by the
+    // login-time skill/spell validation so an active off-class's skill lines survive the otherwise
+    // render-class-only check that would delete them.
+    [[nodiscard]] SkillRaceClassInfoEntry const* GetEffectiveSkillRaceClassInfo(uint32 skill) const;
+    // Mask-parameterized core of the spell-owner resolver: resolves which of the classes in
+    // `classmask` can legitimately know spell_id, via SkillLineAbility race/class masks +
+    // SkillRaceClassInfo.dbc (the ability's ClassMask is frequently 0 for class spells, so the skill
+    // line is the real authority). Sets outHasSkillLineEntries true when the spell has any
+    // skill-line ability at all.
+    [[nodiscard]] uint32 GetSpellClassOwners(uint32 spell_id, uint32 classmask, bool& outHasSkillLineEntries) const;
+    // Mask of the player's EFFECTIVE classes that can legitimately know spell_id. Thin wrapper over
+    // GetSpellClassOwners(spell_id, GetEffectiveClassMask(), ...). Shared by IsSpellFitByClassAndRace
+    // and GetEffectiveClassLevelForSpell so they cannot diverge.
+    [[nodiscard]] uint32 GetSpellEffectiveClassOwners(uint32 spell_id, bool& outHasSkillLineEntries) const;
     bool IsNeedCastPassiveSpellAtLearn(SpellInfo const* spellInfo) const;
 
     void SendProficiency(ItemClass itemClass, uint32 itemSubclassMask);

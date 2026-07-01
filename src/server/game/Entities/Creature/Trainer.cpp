@@ -45,7 +45,7 @@ namespace Trainer
         trainerList.Spells.reserve(_spells.size());
         for (Spell const& trainerSpell : _spells)
         {
-            if (!player->IsSpellFitByClassAndRace(trainerSpell.SpellId))
+            if (!player->IsSpellTrainable(trainerSpell.SpellId))
                 continue;
 
             SpellInfo const* trainerSpellInfo = sSpellMgr->AssertSpellInfo(trainerSpell.SpellId);
@@ -64,11 +64,21 @@ namespace Trainer
             trainerList.Spells.emplace_back();
             WorldPackets::NPC::TrainerListSpell& trainerListSpell = trainerList.Spells.back();
             trainerListSpell.SpellID = trainerSpell.SpellId;
-            trainerListSpell.Usable = AsUnderlyingType(GetSpellState(player, &trainerSpell));
+            SpellState const state = GetSpellState(player, &trainerSpell);
+            trainerListSpell.Usable = AsUnderlyingType(state);
             trainerListSpell.MoneyCost = int32(trainerSpell.MoneyCost * reputationDiscount);
             trainerListSpell.PointCost[0] = 0; // spells don't cost talent points
             trainerListSpell.PointCost[1] = (primaryProfessionFirstRank ? 1 : 0);
             trainerListSpell.ReqLevel = trainerSpell.ReqLevel;
+            // The 3.3.5 client independently greys/hides a trainer entry whose ReqLevel exceeds the
+            // player's DISPLAYED level, regardless of the Usable state the server sends. A multiclass
+            // character's owning-class level (already validated server-side in GetSpellState) can
+            // exceed the displayed (lowest-active) level, so for a spell we will actually teach,
+            // advertise a ReqLevel the client will accept — otherwise it hides a server-trainable
+            // spell. No-op for single-class characters: an Available spell there always has
+            // ReqLevel <= level, so the clamp never triggers.
+            if (state == SpellState::Available && trainerListSpell.ReqLevel > player->GetLevel())
+                trainerListSpell.ReqLevel = player->GetLevel();
             trainerListSpell.ReqSkillLine = trainerSpell.ReqSkillLine;
             trainerListSpell.ReqSkillRank = trainerSpell.ReqSkillRank;
             std::copy(trainerSpell.ReqAbility.begin(), trainerSpell.ReqAbility.end(), trainerListSpell.ReqAbility.begin());
@@ -156,8 +166,9 @@ namespace Trainer
         if (player->HasSpell(trainerSpell->SpellId))
             return SpellState::Known;
 
-        // check race/class requirement
-        if (!player->IsSpellFitByClassAndRace(trainerSpell->SpellId))
+        // check race/class requirement — multiclass: an unlocked (possibly benched) off-class may
+        // train its own spells, so gate on the unlocked class mask rather than the active class.
+        if (!player->IsSpellTrainable(trainerSpell->SpellId))
             return SpellState::Unavailable;
 
         // check skill requirement
@@ -168,8 +179,10 @@ namespace Trainer
             if (reqAbility && !player->HasSpell(reqAbility))
                 return SpellState::Unavailable;
 
-        // check level requirement
-        if (player->GetLevel() < trainerSpell->ReqLevel)
+        // check level requirement — multiclass: gate on the player's level in the (possibly benched)
+        // unlocked class that owns this spell, not the displayed (lowest active) level. Falls back to
+        // GetLevel() for spells no class owns and for single-class characters.
+        if (player->GetUnlockedClassLevelForSpell(trainerSpell->SpellId) < trainerSpell->ReqLevel)
             return SpellState::Unavailable;
 
         // check ranks
@@ -215,8 +228,11 @@ namespace Trainer
         {
             case Type::Class:
             case Type::Pet:
-                // check class for class trainers
-                return player->getClass() == GetTrainerRequirement();
+                // check class for class trainers; multiclass: honor the unlocked class mask so an
+                // unlocked (possibly benched) off-class can reach and use its own trainer (both the
+                // gossip option and the spell list). This function is trainer-only, so widening to the
+                // unlocked mask here never affects non-trainer class gates.
+                return (player->GetUnlockedClassMask() & (1 << (GetTrainerRequirement() - 1))) != 0;
             case Type::Mount:
                 // check race for mount trainers
                 return player->getRace() == GetTrainerRequirement();

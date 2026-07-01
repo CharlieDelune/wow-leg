@@ -33,7 +33,10 @@ namespace Multiclass
         SlotArray slots{};
         std::array<bool, MAX_CLASS_SLOTS> unlocked{ { true, false, false } };
         uint8 renderClass = 0;
-        std::unordered_map<uint8, std::unordered_set<uint32>> ledger;  // active classId -> learned class-specific spell IDs
+        // active classId -> learned class-specific spell IDs
+        std::unordered_map<uint8, std::unordered_set<uint32>> ledger;
+        // every unlocked class (active + benched) -> remembered level/xp
+        std::unordered_map<uint8, ClassProgress> pool;
     };
 
     PlayerState& GetOrCreateState(Player* player);
@@ -41,6 +44,7 @@ namespace Multiclass
     void LoadState(Player* player);
     void SaveState(ObjectGuid guid);
     void UnloadState(ObjectGuid guid);
+    void UnlockClass(Player* player, uint8 classId);
     void ActivateClass(Player* player, uint8 slot, uint8 classId);
     void SwapSlotClass(Player* player, uint8 slot, uint8 newClassId);
     void ReconcileDisplayLevel(Player* player);

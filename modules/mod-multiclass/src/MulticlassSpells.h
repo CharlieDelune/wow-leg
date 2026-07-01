@@ -22,11 +22,20 @@
 #include <cstdint>
 #include <vector>
 
+class Player;
+
 namespace Multiclass
 {
-    // The class's character-creation spells (customSpells) for this race+class,
-    // or empty if the race+class combo has no PlayerInfo (e.g. a vanilla-invalid pairing).
-    std::vector<uint32> StartingSpellsFor(uint8 race, uint8 classId);
+    // The class's character-creation spells for this race+class as if freshly created as `classId`:
+    // the class-specific spells its default skill lines reward at the starting skill value, plus any
+    // customSpells overlay. Empty if the race+class combo has no PlayerInfo (a vanilla-invalid pair).
+    // A skill line's general (non-class) spells are handled by GrantClassSkills, not returned here.
+    std::vector<uint32> StartingSpellsFor(Player* player, uint8 classId);
+
+    // Grant `classId`'s default skill lines onto the player (idempotent) so the client recognises the
+    // class's abilities — including at trainers, which the 3.3.5 client groups by skill line. Must be
+    // called under the module's orchestration guard: SetSkill auto-learns a skill line's general spells.
+    void GrantClassSkills(Player* player, uint8 classId);
 
     // OR of every SkillLineAbility ClassMask entry for the spell; 0 if it has no
     // class-specific entry (general/profession/racial). Used for attribution.

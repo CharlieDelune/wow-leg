@@ -33,6 +33,42 @@
 #include "SpellMgr.h"
 #include "WorldState.h"
 
+namespace
+{
+    // Trainer-only routing for CONDITION_CLASS. Returns true when the condition gates trainer gossip
+    // (a trainer gossip option, or the greeting/menu text of a trainer). Only in that case may a
+    // multiclass player's *unlocked* class mask apply; every other CONDITION_CLASS use (class quests,
+    // loot references, non-trainer gossip) stays on the active/effective mask. Any non-gossip source
+    // type returns immediately, keeping the hot path free of gossip lookups.
+    bool ConditionGatesTrainerGossip(ConditionSourceType sourceType, uint32 menuId, int32 optionOrText)
+    {
+        switch (sourceType)
+        {
+            case CONDITION_SOURCE_TYPE_GOSSIP_MENU_OPTION:
+            {
+                // SourceGroup == MenuID, SourceEntry == OptionID for this source type.
+                GossipMenuItemsMapBounds bounds = sObjectMgr->GetGossipMenuItemsMapBounds(menuId);
+                for (auto itr = bounds.first; itr != bounds.second; ++itr)
+                    if (itr->second.OptionID == uint32(optionOrText))
+                        return (itr->second.OptionNpcFlag & UNIT_NPC_FLAG_TRAINER) != 0;
+                return false;
+            }
+            case CONDITION_SOURCE_TYPE_GOSSIP_MENU:
+            {
+                // SourceGroup == MenuID for this source type; the greeting text opens the trainer if
+                // ANY option under the menu carries the trainer npcflag.
+                GossipMenuItemsMapBounds bounds = sObjectMgr->GetGossipMenuItemsMapBounds(menuId);
+                for (auto itr = bounds.first; itr != bounds.second; ++itr)
+                    if ((itr->second.OptionNpcFlag & UNIT_NPC_FLAG_TRAINER) != 0)
+                        return true;
+                return false;
+            }
+            default:
+                return false;
+        }
+    }
+}
+
 // Checks if object meets the condition
 // Can have CONDITION_SOURCE_TYPE_NONE && !mReferenceId if called from a special event (ie: eventAI)
 bool Condition::Meets(ConditionSourceInfo& sourceInfo)
@@ -132,7 +168,20 @@ bool Condition::Meets(ConditionSourceInfo& sourceInfo)
     case CONDITION_CLASS:
     {
         if (Unit* unit = object->ToUnit())
-            condMeets = unit->getClassMask() & ConditionValue1;
+        {
+            // A multiclass player counts as ALL of their active classes here, so class-gated
+            // content (class gossip text, class loot references, class quests) respects the effective
+            // class. The sole exception is trainer gossip, which routes to the *unlocked* class mask so
+            // an unlocked (possibly benched) off-class can reach and use its own trainer. No-op for
+            // non-players and for unmanaged players, where all three masks are identical.
+            uint32 classMask = unit->getClassMask();
+            if (Player* player = unit->ToPlayer())
+                classMask = ConditionGatesTrainerGossip(SourceType, SourceGroup, SourceEntry)
+                    ? player->GetUnlockedClassMask()
+                    : player->GetEffectiveClassMask();
+
+            condMeets = (classMask & ConditionValue1) != 0;
+        }
         break;
     }
     case CONDITION_RACE:

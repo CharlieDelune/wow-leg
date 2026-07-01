@@ -3103,7 +3103,10 @@ bool Player::CheckSkillLearnedBySpell(uint32 spellId)
         if (!pSkill)
             continue;
 
-        if (GetSkillRaceClassInfo(pSkill->id, getRace(), getClass()))
+        // Validate against the player's EFFECTIVE classes (render + active multiclass off-classes),
+        // so a spell teaching an active off-class's skill is not deleted on login. Reduces to the
+        // render-class check for a normal single-class character.
+        if (GetEffectiveSkillRaceClassInfo(pSkill->id))
             return true;
         else
             errorSkill = pSkill->id;
@@ -12434,33 +12437,164 @@ float Player::GetReputationPriceDiscount(FactionTemplateEntry const* factionTemp
     return discount;
 }
 
-bool Player::IsSpellFitByClassAndRace(uint32 spell_id) const
+uint32 Player::GetSpellClassOwners(uint32 spell_id, uint32 classmask, bool& outHasSkillLineEntries) const
 {
-    uint32 racemask  = getRaceMask();
-    uint32 classmask = getClassMask();
+    uint32 const racemask = getRaceMask();
 
     SkillLineAbilityMapBounds bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spell_id);
-    if (bounds.first == bounds.second)
-        return true;
+    outHasSkillLineEntries = (bounds.first != bounds.second);
 
+    uint32 owners = 0;
     for (SkillLineAbilityMap::const_iterator _spell_idx = bounds.first; _spell_idx != bounds.second; ++_spell_idx)
     {
         // skip wrong race skills
         if (_spell_idx->second->RaceMask && (_spell_idx->second->RaceMask & racemask) == 0)
             continue;
 
-        // skip wrong class skills
+        // skip abilities that admit no effective class at all
         if (_spell_idx->second->ClassMask && (_spell_idx->second->ClassMask & classmask) == 0)
             continue;
 
-        // skip wrong class and race skill saved in SkillRaceClassInfo.dbc
-        if (!GetSkillRaceClassInfo(_spell_idx->second->SkillLine, getRace(), getClass()))
-            continue;
-
-        return true;
+        // Resolve the true owner(s) via SkillRaceClassInfo.dbc, per (race, class). The ability's
+        // ClassMask is frequently 0 for class spells; the class binding then lives entirely in the
+        // skill line, so we consult SkillRaceClassInfo for each effective class rather than trust
+        // ClassMask. With a single-class (render-only) mask this reduces to the original single
+        // GetSkillRaceClassInfo(SkillLine, race, renderClass) check.
+        for (uint8 classId = 1; classId < MAX_CLASSES; ++classId)
+        {
+            uint32 const classBit = 1u << (classId - 1);
+            if (!(classmask & classBit))
+                continue;
+            if (_spell_idx->second->ClassMask && !(_spell_idx->second->ClassMask & classBit))
+                continue;
+            if (GetSkillRaceClassInfo(_spell_idx->second->SkillLine, getRace(), classId))
+                owners |= classBit;
+        }
     }
 
-    return false;
+    return owners;
+}
+
+uint32 Player::GetSpellEffectiveClassOwners(uint32 spell_id, bool& outHasSkillLineEntries) const
+{
+    return GetSpellClassOwners(spell_id, GetEffectiveClassMask(), outHasSkillLineEntries);
+}
+
+bool Player::IsSpellFitByClassAndRace(uint32 spell_id) const
+{
+    bool hasSkillLineEntries = false;
+    uint32 const owners = GetSpellEffectiveClassOwners(spell_id, hasSkillLineEntries);
+
+    // No skill-line ability => not class/skill gated => fit. Otherwise fit iff at least one of the
+    // player's effective classes legitimately owns it.
+    return !hasSkillLineEntries || owners != 0;
+}
+
+bool Player::IsSpellTrainable(uint32 spell_id) const
+{
+    bool hasSkillLineEntries = false;
+    uint32 const owners = GetSpellClassOwners(spell_id, GetUnlockedClassMask(), hasSkillLineEntries);
+
+    // Same fitness rule as IsSpellFitByClassAndRace, but resolved against the player's unlocked
+    // classes so a benched off-class's spells remain trainable while it is inactive.
+    return !hasSkillLineEntries || owners != 0;
+}
+
+uint32 Player::GetEffectiveClassMask() const
+{
+    uint32 classMask = getClassMask();
+    sScriptMgr->OnPlayerGetEffectiveClassMask(this, classMask);
+    return classMask;
+}
+
+uint8 Player::GetEffectiveClassLevel(uint8 classId) const
+{
+    uint8 level = GetLevel();
+    sScriptMgr->OnPlayerGetEffectiveClassLevel(this, classId, level);
+    return level;
+}
+
+uint32 Player::GetUnlockedClassMask() const
+{
+    uint32 classMask = getClassMask();
+    sScriptMgr->OnPlayerGetUnlockedClassMask(this, classMask);
+    return classMask;
+}
+
+uint8 Player::GetUnlockedClassLevel(uint8 classId) const
+{
+    uint8 level = GetLevel();
+    sScriptMgr->OnPlayerGetUnlockedClassLevel(this, classId, level);
+    return level;
+}
+
+SkillRaceClassInfoEntry const* Player::GetEffectiveSkillRaceClassInfo(uint32 skill) const
+{
+    // Validate a skill against every class the player effectively is — the render class plus any
+    // active multiclass off-classes — returning the first matching SkillRaceClassInfo, or nullptr if
+    // none match. For a normal single-class character the effective mask is just the render class, so
+    // this reduces exactly to GetSkillRaceClassInfo(skill, getRace(), getClass()).
+    uint32 const classMask = GetEffectiveClassMask();
+    for (uint8 classId = 1; classId < MAX_CLASSES; ++classId)
+        if (classMask & (1 << (classId - 1)))
+            if (SkillRaceClassInfoEntry const* rcInfo = GetSkillRaceClassInfo(skill, getRace(), classId))
+                return rcInfo;
+    return nullptr;
+}
+
+uint8 Player::GetEffectiveClassLevelForSpell(uint32 spell_id) const
+{
+    bool hasSkillLineEntries = false;
+    uint32 const owners = GetSpellEffectiveClassOwners(spell_id, hasSkillLineEntries);
+
+    // Unowned (general/profession spell, or no effective class owns it): gate on the displayed
+    // level, exactly as before. This is the fallback branch; the fitness gate already excludes
+    // spells no effective class owns from any trainer list.
+    if (!owners)
+        return GetLevel();
+
+    // Owned: gate on the HIGHEST owning-class level, so a spell shared by more than one active
+    // class is trainable when any owning class qualifies.
+    uint8 best = 0;
+    for (uint8 classId = 1; classId < MAX_CLASSES; ++classId)
+    {
+        uint32 const classBit = 1u << (classId - 1);
+        if (!(owners & classBit))
+            continue;
+
+        uint8 const classLevel = GetEffectiveClassLevel(classId);
+        if (classLevel > best)
+            best = classLevel;
+    }
+
+    return best;
+}
+
+uint8 Player::GetUnlockedClassLevelForSpell(uint32 spell_id) const
+{
+    bool hasSkillLineEntries = false;
+    uint32 const owners = GetSpellClassOwners(spell_id, GetUnlockedClassMask(), hasSkillLineEntries);
+
+    // Unowned (general/profession spell, or no unlocked class owns it): gate on the displayed level,
+    // exactly as GetEffectiveClassLevelForSpell does for the effective-mask case.
+    if (!owners)
+        return GetLevel();
+
+    // Owned: gate on the HIGHEST owning-class's unlocked level, so a spell shared by more than one
+    // unlocked class is trainable when any owning class qualifies.
+    uint8 best = 0;
+    for (uint8 classId = 1; classId < MAX_CLASSES; ++classId)
+    {
+        uint32 const classBit = 1u << (classId - 1);
+        if (!(owners & classBit))
+            continue;
+
+        uint8 const classLevel = GetUnlockedClassLevel(classId);
+        if (classLevel > best)
+            best = classLevel;
+    }
+
+    return best;
 }
 
 bool Player::HasQuestForGO(int32 GOId) const
@@ -13823,7 +13957,10 @@ void Player::_LoadSkills(PreparedQueryResult result)
             uint16 value    = fields[1].Get<uint16>();
             uint16 max      = fields[2].Get<uint16>();
 
-            SkillRaceClassInfoEntry const* rcEntry = GetSkillRaceClassInfo(skill, getRace(), getClass());
+            // Validate against the player's EFFECTIVE classes (render + active multiclass off-classes),
+            // so an active off-class's skill lines are not deleted just because they are invalid for
+            // the render class. Reduces to the render-class check for a normal single-class character.
+            SkillRaceClassInfoEntry const* rcEntry = GetEffectiveSkillRaceClassInfo(skill);
             if (!rcEntry)
             {
                 LOG_ERROR("entities.player", "Player {} (GUID: {}), has skill ({}) that is invalid for the race/class combination (Race: {}, Class: {}). Will be deleted.",
