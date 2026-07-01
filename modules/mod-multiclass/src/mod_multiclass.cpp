@@ -60,7 +60,7 @@ public:
         Multiclass::AttributeForgotSpell(player, spellID);
     }
 
-    void OnPlayerGiveXP(Player* player, uint32& amount, Unit* victim, uint8 /*xpSource*/) override
+    void OnPlayerGiveXP(Player* player, uint32& amount, Unit* victim, uint8 xpSource) override
     {
         if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
             return;
@@ -75,7 +75,10 @@ public:
         // (Player.cpp). Replicate the two reachable ones and, on either, return WITHOUT
         // zeroing amount: native GiveXP then re-applies the same guard and also grants
         // nothing, so classes and character stay in exact lockstep (no XP either place).
-        if (!player->IsAlive() && !player->GetBattlegroundId())
+        // Mirror native's death guard exactly (Player.cpp): dead players get no XP EXCEPT
+        // LFG-dungeon completion rewards (native's isLFGReward == xpSource XPSOURCE_QUEST_DF),
+        // which we still route to the classes rather than let native grant to the render char.
+        if (!player->IsAlive() && !player->GetBattlegroundId() && xpSource != PlayerXPSource::XPSOURCE_QUEST_DF)
             return;
         if (player->HasPlayerFlag(PLAYER_FLAGS_NO_XP_GAIN))
             return;
