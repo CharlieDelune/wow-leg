@@ -31,6 +31,11 @@ namespace Multiclass
     // OR of every SkillLineAbility ClassMask entry for the spell; 0 if it has no
     // class-specific entry (general/profession/racial). Used for attribution.
     uint32 CombinedClassMask(uint32 spellId);
+
+    // True if spellId is a talent spell (mirrors Player::learnSpell's thisSpec
+    // expression). Talent spells are out of scope for the spell ledger until the
+    // talent plan; ledgering them would desync spellbook vs talent map on swap-out.
+    bool IsTalentSpell(uint32 spellId);
 }
 
 #endif

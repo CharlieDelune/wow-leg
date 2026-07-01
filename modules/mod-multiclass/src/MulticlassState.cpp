@@ -47,7 +47,8 @@ namespace Multiclass
 
         // Slots
         if (QueryResult result = CharacterDatabase.Query(Acore::StringFormat(
-            "SELECT `slot`, `classId`, `unlocked` FROM `character_multiclass_slot` WHERE `guid` = {} ORDER BY `slot`", low)))
+            "SELECT `slot`, `classId`, `unlocked` FROM `character_multiclass_slot` WHERE `guid` = {} ORDER BY `slot`",
+            low)))
         {
             do
             {
@@ -93,7 +94,8 @@ namespace Multiclass
             if (cp.classId == 0)
                 continue;
             if (QueryResult result = CharacterDatabase.Query(Acore::StringFormat(
-                "SELECT `spellId` FROM `character_multiclass_spell` WHERE `guid` = {} AND `classId` = {}", low, cp.classId)))
+                "SELECT `spellId` FROM `character_multiclass_spell` WHERE `guid` = {} AND `classId` = {}",
+                low, cp.classId)))
             {
                 do
                 {
@@ -127,15 +129,16 @@ namespace Multiclass
         {
             ClassProgress const& cp = state->slots[slot];
             trans->Append(Acore::StringFormat(
-                "INSERT INTO `character_multiclass_slot` (`guid`, `slot`, `classId`, `unlocked`) VALUES ({}, {}, {}, {})",
+                "INSERT INTO `character_multiclass_slot` (`guid`, `slot`, `classId`, `unlocked`)"
+                " VALUES ({}, {}, {}, {})",
                 low, slot, cp.classId, state->unlocked[slot] ? 1 : 0));
 
             // Per-class progression is upserted independently so a benched class
             // (one no longer in any slot) keeps its remembered row instead of being pruned.
             if (cp.classId != 0)
                 trans->Append(Acore::StringFormat(
-                    "INSERT INTO `character_multiclass_class` (`guid`, `classId`, `level`, `xp`) VALUES ({}, {}, {}, {}) "
-                    "ON DUPLICATE KEY UPDATE `level` = {}, `xp` = {}",
+                    "INSERT INTO `character_multiclass_class` (`guid`, `classId`, `level`, `xp`)"
+                    " VALUES ({}, {}, {}, {}) ON DUPLICATE KEY UPDATE `level` = {}, `xp` = {}",
                     low, cp.classId, cp.level, cp.xp, cp.level, cp.xp));
         }
 
@@ -176,14 +179,16 @@ namespace Multiclass
 
         // Remembered class? Restore its level/xp and exact spellbook.
         if (QueryResult clsRow = CharacterDatabase.Query(Acore::StringFormat(
-            "SELECT `level`, `xp` FROM `character_multiclass_class` WHERE `guid` = {} AND `classId` = {}", low, classId)))
+            "SELECT `level`, `xp` FROM `character_multiclass_class` WHERE `guid` = {} AND `classId` = {}",
+            low, classId)))
         {
             Field* f = clsRow->Fetch();
             cp.level = f[0].Get<uint8>();
             cp.xp = f[1].Get<uint32>();
 
             if (QueryResult spellRows = CharacterDatabase.Query(Acore::StringFormat(
-                "SELECT `spellId` FROM `character_multiclass_spell` WHERE `guid` = {} AND `classId` = {}", low, classId)))
+                "SELECT `spellId` FROM `character_multiclass_spell` WHERE `guid` = {} AND `classId` = {}",
+                low, classId)))
             {
                 do
                 {
@@ -200,7 +205,8 @@ namespace Multiclass
                 spells.insert(spellId);
             if (spells.empty())
                 LOG_INFO("module.multiclass",
-                    "ActivateClass: no creation spells for race {} class {} (race-invalid combo); class starts spell-less",
+                    "ActivateClass: no creation spells for race {} class {}"
+                    " (race-invalid combo); class starts spell-less",
                     player->getRace(), classId);
         }
 
@@ -221,6 +227,10 @@ namespace Multiclass
         if (!state)
             return;
 
+        // Talent spells are tracked by the core talent map, not the ledger.
+        if (IsTalentSpell(spellId))
+            return;
+
         for (uint8 classId : ClaimingClasses(state->slots, CombinedClassMask(spellId)))
             state->ledger[classId].insert(spellId);
     }
@@ -232,6 +242,10 @@ namespace Multiclass
 
         PlayerState* state = FindState(player->GetGUID());
         if (!state)
+            return;
+
+        // Talent spells were never ledgered; skip for symmetry with AttributeLearnedSpell.
+        if (IsTalentSpell(spellId))
             return;
 
         for (uint8 classId : ClaimingClasses(state->slots, CombinedClassMask(spellId)))
@@ -253,6 +267,9 @@ namespace Multiclass
             if (pair.second->State == PLAYERSPELL_REMOVED)
                 continue;
             uint32 const spellId = pair.first;
+            // Talent spells are tracked by the core talent map, not the ledger.
+            if (IsTalentSpell(spellId))
+                continue;
             for (uint8 classId : ClaimingClasses(state->slots, CombinedClassMask(spellId)))
                 state->ledger[classId].insert(spellId);
         }

@@ -96,6 +96,7 @@ namespace Multiclass
 
     // Which currently-active classes own a spell, given the OR of its SkillLineAbility
     // class masks (0 = no class-specific entry => general/profession/racial => owned by none).
+    // Owners are returned in slot order (slot 0 first); tests rely on this deterministic ordering.
     inline std::vector<uint8> ClaimingClasses(SlotArray const& slots, uint32 combinedClassMask)
     {
         std::vector<uint8> result;

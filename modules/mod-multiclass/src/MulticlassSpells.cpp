@@ -42,4 +42,13 @@ namespace Multiclass
             mask |= itr->second->ClassMask;
         return mask;
     }
+
+    bool IsTalentSpell(uint32 spellId)
+    {
+        // Mirror Player::learnSpell's thisSpec expression exactly.
+        // Talent spells are managed by the core talent map; ledgering them would
+        // desync spellbook vs talent map on swap-out. Out of scope until the talent plan.
+        uint32 const first = sSpellMgr->GetFirstSpellInChain(spellId);
+        return GetTalentSpellCost(first) > 0 || sSpellMgr->IsAdditionalTalentSpell(first);
+    }
 }
