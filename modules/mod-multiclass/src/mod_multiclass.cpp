@@ -29,7 +29,8 @@ class multiclass_playerscript : public PlayerScript
 {
 public:
     multiclass_playerscript() : PlayerScript("multiclass_playerscript",
-        { PLAYERHOOK_ON_LOGIN, PLAYERHOOK_ON_LOGOUT, PLAYERHOOK_ON_SAVE }) { }
+        { PLAYERHOOK_ON_LOGIN, PLAYERHOOK_ON_LOGOUT, PLAYERHOOK_ON_SAVE,
+          PLAYERHOOK_ON_LEARN_SPELL, PLAYERHOOK_ON_FORGOT_SPELL }) { }
 
     void OnPlayerLogin(Player* player) override
     {
@@ -37,7 +38,24 @@ public:
             return;
 
         Multiclass::LoadState(player);
+        Multiclass::BackfillActiveLedgers(player);
         LOG_INFO("module.multiclass", "mod-multiclass loaded for player {}", player->GetGUID().ToString());
+    }
+
+    void OnPlayerLearnSpell(Player* player, uint32 spellID) override
+    {
+        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+            return;
+
+        Multiclass::AttributeLearnedSpell(player, spellID);
+    }
+
+    void OnPlayerForgotSpell(Player* player, uint32 spellID) override
+    {
+        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+            return;
+
+        Multiclass::AttributeForgotSpell(player, spellID);
     }
 
     void OnPlayerSave(Player* player) override

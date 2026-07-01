@@ -208,6 +208,52 @@ namespace Multiclass
         state.ledger[classId] = std::move(spells);
     }
 
+    void AttributeLearnedSpell(Player* player, uint32 spellId)
+    {
+        if (g_inOrchestration)
+            return;
+
+        PlayerState* state = FindState(player->GetGUID());
+        if (!state)
+            return;
+
+        for (uint8 classId : ClaimingClasses(state->slots, CombinedClassMask(spellId)))
+            state->ledger[classId].insert(spellId);
+    }
+
+    void AttributeForgotSpell(Player* player, uint32 spellId)
+    {
+        if (g_inOrchestration)
+            return;
+
+        PlayerState* state = FindState(player->GetGUID());
+        if (!state)
+            return;
+
+        for (uint8 classId : ClaimingClasses(state->slots, CombinedClassMask(spellId)))
+        {
+            auto itr = state->ledger.find(classId);
+            if (itr != state->ledger.end())
+                itr->second.erase(spellId);
+        }
+    }
+
+    void BackfillActiveLedgers(Player* player)
+    {
+        PlayerState* state = FindState(player->GetGUID());
+        if (!state)
+            return;
+
+        for (PlayerSpellMap::value_type const& pair : player->GetSpellMap())
+        {
+            if (pair.second->State == PLAYERSPELL_REMOVED)
+                continue;
+            uint32 const spellId = pair.first;
+            for (uint8 classId : ClaimingClasses(state->slots, CombinedClassMask(spellId)))
+                state->ledger[classId].insert(spellId);
+        }
+    }
+
     void SwapSlotClass(Player* player, uint8 slot, uint8 newClassId)
     {
         PlayerState& state = GetOrCreateState(player);

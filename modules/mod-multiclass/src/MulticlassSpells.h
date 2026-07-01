@@ -27,6 +27,10 @@ namespace Multiclass
     // The class's character-creation spells (customSpells) for this race+class,
     // or empty if the race+class combo has no PlayerInfo (e.g. a vanilla-invalid pairing).
     std::vector<uint32> StartingSpellsFor(uint8 race, uint8 classId);
+
+    // OR of every SkillLineAbility ClassMask entry for the spell; 0 if it has no
+    // class-specific entry (general/profession/racial). Used for attribution.
+    uint32 CombinedClassMask(uint32 spellId);
 }
 
 #endif

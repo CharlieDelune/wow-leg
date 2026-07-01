@@ -18,6 +18,7 @@
 #include "MulticlassSpells.h"
 #include "ObjectMgr.h"
 #include "Player.h"
+#include "SpellMgr.h"
 
 namespace Multiclass
 {
@@ -31,5 +32,14 @@ namespace Multiclass
         for (uint32 spellId : info->customSpells)
             spells.push_back(spellId);
         return spells;
+    }
+
+    uint32 CombinedClassMask(uint32 spellId)
+    {
+        uint32 mask = 0;
+        SkillLineAbilityMapBounds bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+        for (SkillLineAbilityMap::const_iterator itr = bounds.first; itr != bounds.second; ++itr)
+            mask |= itr->second->ClassMask;
+        return mask;
     }
 }
