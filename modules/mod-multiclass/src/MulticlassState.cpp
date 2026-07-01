@@ -198,6 +198,10 @@ namespace Multiclass
             cp.xp = 0;
             for (uint32 spellId : StartingSpellsFor(player->getRace(), classId))
                 spells.insert(spellId);
+            if (spells.empty())
+                LOG_INFO("module.multiclass",
+                    "ActivateClass: no creation spells for race {} class {} (race-invalid combo); class starts spell-less",
+                    player->getRace(), classId);
         }
 
         g_inOrchestration = true;
