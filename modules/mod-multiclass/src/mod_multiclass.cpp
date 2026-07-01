@@ -30,7 +30,8 @@ class multiclass_playerscript : public PlayerScript
 public:
     multiclass_playerscript() : PlayerScript("multiclass_playerscript",
         { PLAYERHOOK_ON_LOGIN, PLAYERHOOK_ON_LOGOUT, PLAYERHOOK_ON_SAVE,
-          PLAYERHOOK_ON_LEARN_SPELL, PLAYERHOOK_ON_FORGOT_SPELL }) { }
+          PLAYERHOOK_ON_LEARN_SPELL, PLAYERHOOK_ON_FORGOT_SPELL,
+          PLAYERHOOK_ON_GIVE_EXP }) { }
 
     void OnPlayerLogin(Player* player) override
     {
@@ -57,6 +58,35 @@ public:
             return;
 
         Multiclass::AttributeForgotSpell(player, spellID);
+    }
+
+    void OnPlayerGiveXP(Player* player, uint32& amount, Unit* victim, uint8 /*xpSource*/) override
+    {
+        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+            return;
+        if (amount == 0)
+            return;
+        // Only take over XP for a player we actually manage; never zero an unmanaged
+        // player's XP.
+        if (!Multiclass::FindState(player->GetGUID()))
+            return;
+
+        // This hook fires at the XP source, BEFORE native GiveXP's own eligibility guards
+        // (Player.cpp). Replicate the two reachable ones and, on either, return WITHOUT
+        // zeroing amount: native GiveXP then re-applies the same guard and also grants
+        // nothing, so classes and character stay in exact lockstep (no XP either place).
+        if (!player->IsAlive() && !player->GetBattlegroundId())
+            return;
+        if (player->HasPlayerFlag(PLAYER_FLAGS_NO_XP_GAIN))
+            return;
+
+        uint32 const base = amount;
+        // Mirror native: rested applies only on kills (victim != nullptr). GetXPRestBonus
+        // both computes the bonus AND drains the rested pool, exactly once per award.
+        uint32 const bonus = victim ? player->GetXPRestBonus(base) : 0;
+        Multiclass::RouteExperience(player, base + bonus);
+
+        amount = 0;   // suppress the native single-class XP path; the module owns all XP
     }
 
     void OnPlayerSave(Player* player) override

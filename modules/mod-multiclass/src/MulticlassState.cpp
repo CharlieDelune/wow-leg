@@ -17,10 +17,14 @@
 
 #include "MulticlassState.h"
 #include "MulticlassSpells.h"
+#include "Chat.h"
 #include "DatabaseEnv.h"
+#include "DBCStores.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "StringFormat.h"
+#include "World.h"
+#include "WorldSession.h"
 #include <unordered_map>
 
 namespace
@@ -274,6 +278,33 @@ namespace Multiclass
             for (uint8 classId : ClaimingClasses(state->slots, CombinedClassMask(spellId)))
                 state->ledger[classId].insert(spellId);
         }
+    }
+
+    void RouteExperience(Player* player, uint32 effectiveXp)
+    {
+        PlayerState* state = FindState(player->GetGUID());
+        if (!state)
+            return;
+
+        uint8 const maxLevel = static_cast<uint8>(sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL));
+        auto const xpToNext = [](uint8 level) -> uint32 { return sObjectMgr->GetXPForLevel(level); };
+        LocaleConstant const loc = player->GetSession()->GetSessionDbcLocale();
+
+        // Snapshot of the catch-up receivers is taken once, here (SlotsAtMinLevel reads the
+        // pre-award levels); every tied-lowest class gets the FULL award.
+        for (uint8 slotIdx : SlotsAtMinLevel(state->slots))
+        {
+            ClassProgress& cp = state->slots[slotIdx];
+            if (ApplyXpToClass(cp, effectiveXp, maxLevel, xpToNext) > 0)
+            {
+                if (ChrClassesEntry const* ce = sChrClassesStore.LookupEntry(cp.classId))
+                    ChatHandler(player->GetSession()).PSendSysMessage(
+                        "Your {} is now level {}!", ce->name[loc], uint32(cp.level));
+            }
+        }
+
+        // Always reconcile: even without a ding, the native XP bar must mirror the min class.
+        ReconcileDisplayLevel(player);
     }
 
     void ReconcileDisplayLevel(Player* player)
