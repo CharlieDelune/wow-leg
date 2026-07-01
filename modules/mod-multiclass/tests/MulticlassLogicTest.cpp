@@ -42,12 +42,97 @@ TEST(MulticlassLogicTest, ComputeDisplayLevel_isLowestActiveLevel)
     EXPECT_EQ(ComputeDisplayLevel(MakeSlots({ 1, 25, 0 }, { 4, 10, 0 }, { 8, 18, 0 })), 10);
 }
 
-TEST(MulticlassLogicTest, PerClassXp_dividedToFullRange)
+TEST(MulticlassLogicTest, MinActiveLevel_isZeroWhenNoneActiveElseLowest)
 {
-    EXPECT_EQ(PerClassXp(300, 1, 0.0f), 300u);   // single class always full
-    EXPECT_EQ(PerClassXp(300, 3, 0.0f), 100u);   // fully divided
-    EXPECT_EQ(PerClassXp(300, 3, 1.0f), 300u);   // full to each
-    EXPECT_EQ(PerClassXp(300, 3, 0.5f), 200u);   // halfway: 100 + 0.5*(300-100)
+    EXPECT_EQ(MinActiveLevel(MakeSlots({ 0, 1, 0 })), 0u);                       // none active
+    EXPECT_EQ(MinActiveLevel(MakeSlots({ 1, 25, 0 })), 25u);                     // single
+    EXPECT_EQ(MinActiveLevel(MakeSlots({ 1, 25, 0 }, { 4, 10, 0 })), 10u);       // two
+    EXPECT_EQ(MinActiveLevel(MakeSlots({ 1, 12, 0 }, { 4, 12, 0 }, { 8, 15, 0 })), 12u);
+}
+
+TEST(MulticlassLogicTest, SlotsAtMinLevel_selectsEveryActiveClassTiedAtMinimum)
+{
+    // all three equal -> all three slot indices
+    std::vector<uint8> all = SlotsAtMinLevel(MakeSlots({ 1, 12, 0 }, { 4, 12, 0 }, { 8, 12, 0 }));
+    ASSERT_EQ(all.size(), 3u);
+    EXPECT_EQ(all[0], 0u); EXPECT_EQ(all[1], 1u); EXPECT_EQ(all[2], 2u);
+
+    // one lower -> only that slot
+    std::vector<uint8> one = SlotsAtMinLevel(MakeSlots({ 1, 10, 0 }, { 4, 12, 0 }, { 8, 15, 0 }));
+    ASSERT_EQ(one.size(), 1u);
+    EXPECT_EQ(one[0], 0u);
+
+    // two tied low, one high -> the two low slots
+    std::vector<uint8> two = SlotsAtMinLevel(MakeSlots({ 1, 10, 0 }, { 4, 10, 0 }, { 8, 15, 0 }));
+    ASSERT_EQ(two.size(), 2u);
+    EXPECT_EQ(two[0], 0u); EXPECT_EQ(two[1], 1u);
+
+    // none active -> empty
+    EXPECT_TRUE(SlotsAtMinLevel(MakeSlots({ 0, 1, 0 })).empty());
+}
+
+namespace
+{
+    // Flat synthetic curve: every level needs `per` XP to advance.
+    struct FlatCurve
+    {
+        uint32 per;
+        uint32 operator()(uint8 /*level*/) const { return per; }
+    };
+}
+
+TEST(MulticlassLogicTest, ApplyXpToClass_accruesWithoutLevelingBelowThreshold)
+{
+    ClassProgress cp{ 8, 1, 0 };
+    EXPECT_EQ(ApplyXpToClass(cp, 50u, 80, FlatCurve{ 100u }), 0u);
+    EXPECT_EQ(cp.level, 1u);
+    EXPECT_EQ(cp.xp, 50u);
+}
+
+TEST(MulticlassLogicTest, ApplyXpToClass_singleLevelKeepsRemainder)
+{
+    ClassProgress cp{ 8, 1, 0 };
+    EXPECT_EQ(ApplyXpToClass(cp, 120u, 80, FlatCurve{ 100u }), 1u);
+    EXPECT_EQ(cp.level, 2u);
+    EXPECT_EQ(cp.xp, 20u);
+}
+
+TEST(MulticlassLogicTest, ApplyXpToClass_multiLevelInOneAward)
+{
+    ClassProgress cp{ 8, 1, 0 };
+    EXPECT_EQ(ApplyXpToClass(cp, 350u, 80, FlatCurve{ 100u }), 3u);  // 100+100+100 used, 50 left
+    EXPECT_EQ(cp.level, 4u);
+    EXPECT_EQ(cp.xp, 50u);
+}
+
+TEST(MulticlassLogicTest, ApplyXpToClass_capsAtMaxLevelWithNoOverflowXp)
+{
+    ClassProgress cp{ 8, 79, 0 };
+    EXPECT_EQ(ApplyXpToClass(cp, 10000u, 80, FlatCurve{ 100u }), 1u);
+    EXPECT_EQ(cp.level, 80u);
+    EXPECT_EQ(cp.xp, 0u);                                           // overflow discarded at cap
+}
+
+TEST(MulticlassLogicTest, ApplyXpToClass_atMaxLevelIsNoOp)
+{
+    ClassProgress cp{ 8, 80, 0 };
+    EXPECT_EQ(ApplyXpToClass(cp, 500u, 80, FlatCurve{ 100u }), 0u);
+    EXPECT_EQ(cp.level, 80u);
+    EXPECT_EQ(cp.xp, 0u);
+}
+
+TEST(MulticlassLogicTest, CatchUp_twoTiedLowClassesEachGainFullAwardAndCanInvert)
+{
+    // Snapshot-at-award: the two level-10 classes each get the FULL award and may
+    // overshoot the level-15 class; the third is untouched (gains nothing this award).
+    SlotArray slots = MakeSlots({ 1, 10, 0 }, { 4, 10, 0 }, { 8, 15, 0 });
+    FlatCurve curve{ 100u };
+    for (uint8 idx : SlotsAtMinLevel(slots))
+        ApplyXpToClass(slots[idx], 650u, 80, curve);               // 650 -> +6 levels each
+    EXPECT_EQ(slots[0].level, 16u);
+    EXPECT_EQ(slots[1].level, 16u);
+    EXPECT_EQ(slots[2].level, 15u);                                // never received this award
+    EXPECT_EQ(MinActiveLevel(slots), 15u);                         // now the third is lowest
 }
 
 TEST(MulticlassLogicTest, TalentPointsForLevel_firstPointAtTen)

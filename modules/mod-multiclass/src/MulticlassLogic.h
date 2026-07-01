@@ -64,17 +64,59 @@ namespace Multiclass
         return lowest == 0 ? uint8(1) : lowest;
     }
 
-    inline uint32 PerClassXp(uint32 amount, uint8 activeCount, float share)
+    // Minimum level among active (classId != 0) slots; 0 if no class is active.
+    // Companion to ComputeDisplayLevel: this returns 0 for "no active class" so the
+    // XP router can tell that apart from a genuine level 1.
+    inline uint8 MinActiveLevel(SlotArray const& slots)
     {
-        if (activeCount <= 1)
-            return amount;
-        if (share < 0.0f)
-            share = 0.0f;
-        if (share > 1.0f)
-            share = 1.0f;
-        float const divided = static_cast<float>(amount) / static_cast<float>(activeCount);
-        float const full = static_cast<float>(amount);
-        return static_cast<uint32>(divided + share * (full - divided) + 0.5f);
+        uint8 lowest = 0;
+        for (ClassProgress const& slot : slots)
+        {
+            if (slot.classId == 0)
+                continue;
+            if (lowest == 0 || slot.level < lowest)
+                lowest = slot.level;
+        }
+        return lowest;
+    }
+
+    // Slot indices (0..2) of the active classes tied at MinActiveLevel(slots), ascending.
+    // These are the catch-up receivers: each gains the full XP award. Empty if none active.
+    inline std::vector<uint8> SlotsAtMinLevel(SlotArray const& slots)
+    {
+        std::vector<uint8> result;
+        uint8 const minLevel = MinActiveLevel(slots);
+        if (minLevel == 0)
+            return result;
+        for (uint8 i = 0; i < MAX_CLASS_SLOTS; ++i)
+            if (slots[i].classId != 0 && slots[i].level == minLevel)
+                result.push_back(i);
+        return result;
+    }
+
+    // Apply `award` XP to one class, leveling against `xpToNext`, capped at `maxLevel`.
+    // xpToNext(L) returns the XP required to advance FROM level L TO L+1. At the cap no XP
+    // is retained (mirrors the native engine stopping at max level). Returns levels gained.
+    // CurveFn is any callable uint32(uint8) so tests can inject a synthetic curve.
+    template <typename CurveFn>
+    inline uint8 ApplyXpToClass(ClassProgress& cp, uint32 award, uint8 maxLevel, CurveFn xpToNext)
+    {
+        if (cp.level >= maxLevel)
+            return 0;
+
+        uint8 gained = 0;
+        uint64 xp = static_cast<uint64>(cp.xp) + award;
+        while (cp.level < maxLevel)
+        {
+            uint32 const need = xpToNext(cp.level);
+            if (need == 0 || xp < need)
+                break;
+            xp -= need;
+            ++cp.level;
+            ++gained;
+        }
+        cp.xp = (cp.level >= maxLevel) ? 0u : static_cast<uint32>(xp);
+        return gained;
     }
 
     inline uint32 TalentPointsForLevel(uint8 level)

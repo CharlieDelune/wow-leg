@@ -9,12 +9,3 @@
 #        Default:     0 - disabled
 #
 Multiclass.Enable = 0
-
-#
-#    Multiclass.XPShare
-#        Description: How kill/quest XP is shared across active classes.
-#                     0.0 = fully divided (amount / number of active classes)
-#                     1.0 = full amount to every active class
-#        Default:     0.0
-#
-Multiclass.XPShare = 0.0
