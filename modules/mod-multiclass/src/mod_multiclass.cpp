@@ -39,6 +39,7 @@ public:
 
         Multiclass::LoadState(player);
         Multiclass::BackfillActiveLedgers(player);
+        Multiclass::ReconcileDisplayLevel(player);
         LOG_INFO("module.multiclass", "mod-multiclass loaded for player {}", player->GetGUID().ToString());
     }
 
@@ -175,6 +176,7 @@ public:
 
         state.slots[slot].level = level;
         Multiclass::SaveState(player->GetGUID());
+        Multiclass::ReconcileDisplayLevel(player);
         handler->PSendSysMessage("Slot {} level set to {}.", slot, level);
         return true;
     }

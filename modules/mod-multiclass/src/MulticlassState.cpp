@@ -18,6 +18,7 @@
 #include "MulticlassState.h"
 #include "MulticlassSpells.h"
 #include "DatabaseEnv.h"
+#include "ObjectMgr.h"
 #include "Player.h"
 #include "StringFormat.h"
 #include <unordered_map>
@@ -275,6 +276,38 @@ namespace Multiclass
         }
     }
 
+    void ReconcileDisplayLevel(Player* player)
+    {
+        PlayerState* state = FindState(player->GetGUID());
+        if (!state)
+            return;
+
+        std::vector<uint8> const targets = SlotsAtMinLevel(state->slots);
+        if (targets.empty())
+            return;   // no active class -> leave the native level untouched
+
+        uint8 const minLevel = state->slots[targets[0]].level;
+        uint32 const displayXp = state->slots[targets[0]].xp;   // lowest slot index at min
+        uint8 const cur = player->GetLevel();
+
+        if (minLevel > cur)
+        {
+            // Step up one level at a time, matching native GiveXP's GiveLevel(level+1) loop
+            // so each intermediate level's mail rewards / achievement criteria fire.
+            for (uint8 lvl = cur + 1; lvl <= minLevel; ++lvl)
+                player->GiveLevel(lvl);
+        }
+        else if (minLevel < cur)
+        {
+            // Deliberate de-level (fresh/lower slot). Single call; stepping down would emit
+            // dozens of packets. Cosmetic "level up" packet on a down-move is accepted.
+            player->GiveLevel(minLevel);
+        }
+
+        player->SetUInt32Value(PLAYER_NEXT_LEVEL_XP, sObjectMgr->GetXPForLevel(minLevel));
+        player->SetUInt32Value(PLAYER_XP, displayXp);
+    }
+
     void SwapSlotClass(Player* player, uint8 slot, uint8 newClassId)
     {
         PlayerState& state = GetOrCreateState(player);
@@ -312,6 +345,7 @@ namespace Multiclass
         }
 
         ActivateClass(player, slot, newClassId);
+        ReconcileDisplayLevel(player);
         SaveState(player->GetGUID());
     }
 }

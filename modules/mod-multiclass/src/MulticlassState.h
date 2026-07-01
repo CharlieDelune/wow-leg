@@ -43,6 +43,7 @@ namespace Multiclass
     void UnloadState(ObjectGuid guid);
     void ActivateClass(Player* player, uint8 slot, uint8 classId);
     void SwapSlotClass(Player* player, uint8 slot, uint8 newClassId);
+    void ReconcileDisplayLevel(Player* player);
     void AttributeLearnedSpell(Player* player, uint32 spellId);
     void AttributeForgotSpell(Player* player, uint32 spellId);
     void BackfillActiveLedgers(Player* player);
