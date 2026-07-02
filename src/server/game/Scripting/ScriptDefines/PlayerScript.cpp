@@ -62,26 +62,6 @@ void ScriptMgr::OnPlayerCalculateTalentsPoints(Player const* player, uint32& tal
     CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_CALCULATE_TALENTS_POINTS, script->OnPlayerCalculateTalentsPoints(player, talentPointsForLevel));
 }
 
-void ScriptMgr::OnPlayerGetEffectiveClassMask(Player const* player, uint32& classMask)
-{
-    CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_GET_EFFECTIVE_CLASS_MASK, script->OnPlayerGetEffectiveClassMask(player, classMask));
-}
-
-void ScriptMgr::OnPlayerGetEffectiveClassLevel(Player const* player, uint8 classId, uint8& level)
-{
-    CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_GET_EFFECTIVE_CLASS_LEVEL, script->OnPlayerGetEffectiveClassLevel(player, classId, level));
-}
-
-void ScriptMgr::OnPlayerGetUnlockedClassMask(Player const* player, uint32& classMask)
-{
-    CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_GET_UNLOCKED_CLASS_MASK, script->OnPlayerGetUnlockedClassMask(player, classMask));
-}
-
-void ScriptMgr::OnPlayerGetUnlockedClassLevel(Player const* player, uint8 classId, uint8& level)
-{
-    CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_GET_UNLOCKED_CLASS_LEVEL, script->OnPlayerGetUnlockedClassLevel(player, classId, level));
-}
-
 void ScriptMgr::OnPlayerReleasedGhost(Player* player)
 {
     CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_PLAYER_RELEASED_GHOST, script->OnPlayerReleasedGhost(player));

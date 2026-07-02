@@ -32,7 +32,7 @@
 
 namespace
 {
-    std::unordered_map<ObjectGuid, Multiclass::PlayerState> g_states;
+    std::unordered_map<ObjectGuid, Multiclass::Ledger> g_ledgers;
     bool g_inOrchestration = false;  // suppress learn/forget capture during our own grants/removes
 
     // A spell is class-attributable (bankable/ledgerable) only if it is a genuine class ability. Primary
@@ -54,175 +54,106 @@ namespace
 
 namespace Multiclass
 {
-    PlayerState* FindState(ObjectGuid guid)
+    Ledger* FindLedger(ObjectGuid guid)
     {
-        auto itr = g_states.find(guid);
-        return itr == g_states.end() ? nullptr : &itr->second;
+        auto itr = g_ledgers.find(guid);
+        return itr == g_ledgers.end() ? nullptr : &itr->second;
     }
 
-    void LoadState(Player* player)
+    // The class SET is loaded by core (Player::_LoadMulticlassProfile) before this runs; here we load
+    // only the per-class learned-spell ledger, for the classes currently active in the profile.
+    void LoadLedger(Player* player)
     {
         ObjectGuid const guid = player->GetGUID();
         uint32 const low = guid.GetCounter();
+        Ledger& ledger = g_ledgers[guid];
+        ledger.clear();
 
-        PlayerState& state = g_states[guid];
-        state = PlayerState{};
-        state.renderClass = player->getClass();
-
-        // Slots
-        if (QueryResult result = CharacterDatabase.Query(Acore::StringFormat(
-            "SELECT `slot`, `classId`, `unlocked` FROM `character_multiclass_slot` WHERE `guid` = {} ORDER BY `slot`",
-            low)))
+        for (uint8 classId : player->GetMulticlassProfile().GetActiveClasses())
         {
-            do
-            {
-                Field* fields = result->Fetch();
-                uint8 const slot = fields[0].Get<uint8>();
-                if (slot >= MAX_CLASS_SLOTS)
-                    continue;
-                state.slots[slot].classId = fields[1].Get<uint8>();
-                state.unlocked[slot] = fields[2].Get<uint8>() != 0;
-            } while (result->NextRow());
-        }
-        else
-        {
-            // First login under multiclass: seed slot 0 from the character's current class.
-            state.slots[0].classId = player->getClass();
-            state.slots[0].level = player->GetLevel();
-            state.slots[0].xp = player->GetUInt32Value(PLAYER_XP);
-            state.unlocked[0] = true;
-            state.pool[state.slots[0].classId] = state.slots[0];
-        }
-
-        // Per-class progression
-        if (QueryResult result = CharacterDatabase.Query(Acore::StringFormat(
-            "SELECT `classId`, `level`, `xp` FROM `character_multiclass_class` WHERE `guid` = {}", low)))
-        {
-            do
-            {
-                Field* fields = result->Fetch();
-                uint8 const classId = fields[0].Get<uint8>();
-                uint8 const level   = fields[1].Get<uint8>();
-                uint32 const xp     = fields[2].Get<uint32>();
-                state.pool[classId] = ClassProgress{ classId, level, xp };  // full unlocked pool
-                for (ClassProgress& slot : state.slots)                      // active slots mirror the pool
-                    if (slot.classId == classId)
-                    {
-                        slot.level = level;
-                        slot.xp = xp;
-                    }
-            } while (result->NextRow());
-        }
-
-        // Per-class learned-spell ledger (only for classes currently in a slot).
-        for (ClassProgress const& cp : state.slots)
-        {
-            if (cp.classId == 0)
-                continue;
             if (QueryResult result = CharacterDatabase.Query(Acore::StringFormat(
                 "SELECT `spellId` FROM `character_multiclass_spell` WHERE `guid` = {} AND `classId` = {}",
-                low, cp.classId)))
+                low, classId)))
             {
                 do
                 {
-                    state.ledger[cp.classId].insert(result->Fetch()[0].Get<uint32>());
+                    ledger[classId].insert(result->Fetch()[0].Get<uint32>());
                 } while (result->NextRow());
             }
         }
     }
 
-    PlayerState& GetOrCreateState(Player* player)
+    Ledger& GetOrCreateLedger(Player* player)
     {
-        if (PlayerState* existing = FindState(player->GetGUID()))
+        if (Ledger* existing = FindLedger(player->GetGUID()))
             return *existing;
-        LoadState(player);
-        return g_states[player->GetGUID()];
+        LoadLedger(player);
+        return g_ledgers[player->GetGUID()];
     }
 
-    void SaveState(ObjectGuid guid)
+    // Persist only `character_multiclass_spell`, for the active classes. Core owns the set tables
+    // (character_multiclass_class / _slot) via Player::_SaveMulticlassProfile.
+    void SaveLedger(Player* player, bool sync)
     {
-        PlayerState* state = FindState(guid);
-        if (!state)
+        Ledger* ledger = FindLedger(player->GetGUID());
+        if (!ledger)
             return;
 
-        uint32 const low = guid.GetCounter();
+        uint32 const low = player->GetGUID().GetCounter();
         CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
-
-        // Slots are a fixed 0..2 set and always fully rewritten.
-        trans->Append(Acore::StringFormat("DELETE FROM `character_multiclass_slot` WHERE `guid` = {}", low));
-
-        for (uint8 slot = 0; slot < MAX_CLASS_SLOTS; ++slot)
+        for (uint8 classId : player->GetMulticlassProfile().GetActiveClasses())
         {
-            ClassProgress const& cp = state->slots[slot];
-            trans->Append(Acore::StringFormat(
-                "INSERT INTO `character_multiclass_slot` (`guid`, `slot`, `classId`, `unlocked`)"
-                " VALUES ({}, {}, {}, {})",
-                low, slot, cp.classId, state->unlocked[slot] ? 1 : 0));
-
-            // Per-class progression is upserted independently so a benched class
-            // (one no longer in any slot) keeps its remembered row instead of being pruned.
-            if (cp.classId != 0)
-            {
-                trans->Append(Acore::StringFormat(
-                    "INSERT INTO `character_multiclass_class` (`guid`, `classId`, `level`, `xp`)"
-                    " VALUES ({}, {}, {}, {}) ON DUPLICATE KEY UPDATE `level` = {}, `xp` = {}",
-                    low, cp.classId, cp.level, cp.xp, cp.level, cp.xp));
-                state->pool[cp.classId] = cp;  // keep the in-memory unlocked pool level in sync with the active slot
-            }
-        }
-
-        for (uint8 slot = 0; slot < MAX_CLASS_SLOTS; ++slot)
-        {
-            uint8 const classId = state->slots[slot].classId;
-            if (classId == 0)
-                continue;
-
             trans->Append(Acore::StringFormat(
                 "DELETE FROM `character_multiclass_spell` WHERE `guid` = {} AND `classId` = {}", low, classId));
 
-            auto itr = state->ledger.find(classId);
-            if (itr != state->ledger.end())
+            auto itr = ledger->find(classId);
+            if (itr != ledger->end())
                 for (uint32 spellId : itr->second)
                     trans->Append(Acore::StringFormat(
                         "INSERT INTO `character_multiclass_spell` (`guid`, `classId`, `spellId`) VALUES ({}, {}, {})",
                         low, classId, spellId));
         }
-
-        CharacterDatabase.CommitTransaction(trans);
+        // Sync commit when a later step in the SAME world tick reads these rows back: SwapSlotClass banks
+        // the outgoing class right before a possible re-activation, and ActivateClass's remembered-branch
+        // restore is a synchronous pool query with no happens-before against an async commit -- an async
+        // bank could be read back empty. Async everywhere else (periodic save, logout).
+        if (sync)
+            CharacterDatabase.DirectCommitTransaction(trans);
+        else
+            CharacterDatabase.CommitTransaction(trans);
     }
 
-    void UnloadState(ObjectGuid guid)
+    void UnloadLedger(Player* player)
     {
-        SaveState(guid);
-        g_states.erase(guid);
+        SaveLedger(player);
+        g_ledgers.erase(player->GetGUID());
     }
 
     void UnlockClass(Player* player, uint8 classId)
     {
-        if (classId == 0 || classId >= MAX_CLASSES)
+        if (!MulticlassProfile::IsValidClassId(classId))
             return;
 
-        PlayerState& state = GetOrCreateState(player);
-        if (state.pool.find(classId) != state.pool.end())
+        MulticlassProfile& mc = player->GetMulticlassProfile();
+        if (mc.HasOwnedClass(classId))
             return;  // already unlocked -> idempotent
 
-        uint32 const low = player->GetGUID().GetCounter();
-        state.pool[classId] = ClassProgress{ classId, 1, 0 };
+        // The profile owns the pool; core persists the `_class` row on save (callers that unlock
+        // outside a swap also call Player::SaveMulticlassProfile to keep the unlock crash-safe).
+        mc.AddOwnedClass(classId, 1, 0);
 
-        // Bank the creation kit into the class's remembered book (not live -- the class is benched
-        // until it is slotted; its skill lines and spells go live only via ActivateClass). The `_class`
-        // row and every `_spell` row commit as ONE transaction so ActivateClass's benched-restore can
-        // never read a half-written kit.
-        CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
-        trans->Append(Acore::StringFormat(
-            "INSERT INTO `character_multiclass_class` (`guid`, `classId`, `level`, `xp`) VALUES ({}, {}, 1, 0)"
-            " ON DUPLICATE KEY UPDATE `classId` = `classId`", low, classId));
+        // Bank the creation kit into the class's `_spell` book (benched -- it goes live only via
+        // ActivateClass). Committed as one transaction so ActivateClass's restore never reads a partial kit.
+        uint32 const low = player->GetGUID().GetCounter();
         auto const starters = StartingSpellsFor(player, classId);
+        CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
         for (uint32 spellId : starters)
             trans->Append(Acore::StringFormat(
                 "INSERT INTO `character_multiclass_spell` (`guid`, `classId`, `spellId`) VALUES ({}, {}, {})"
                 " ON DUPLICATE KEY UPDATE `spellId` = `spellId`", low, classId, spellId));
-        CharacterDatabase.CommitTransaction(trans);
+        // Synchronous: a follow-up ActivateClass (same tick, e.g. `unlockclass` then `setclass`) reads
+        // this kit back with a sync query and must see it committed, not an in-flight async write.
+        CharacterDatabase.DirectCommitTransaction(trans);
 
         LOG_INFO("module.multiclass", "UnlockClass: guid {} unlocked class {} with {} starter spells",
             low, classId, starters.size());
@@ -230,27 +161,17 @@ namespace Multiclass
 
     void ActivateClass(Player* player, uint8 slot, uint8 classId)
     {
-        PlayerState& state = GetOrCreateState(player);
+        MulticlassProfile& mc = player->GetMulticlassProfile();
+        Ledger& ledger = GetOrCreateLedger(player);
         uint32 const low = player->GetGUID().GetCounter();
-        ClassProgress& cp = state.slots[slot];
-        cp.classId = classId;
 
         std::unordered_set<uint32> spells;
 
-        // A COMMITTED `_class` row (unlocked in a prior call/session, or previously slotted) means the
-        // class is remembered: restore its level/xp and exact spellbook from the DB. We decide on the
-        // committed row -- not pool membership -- precisely to dodge the async-write race: UnlockClass
-        // persists via CharacterDatabase.Execute (asynchronous), so a brand-new class's rows are NOT yet
-        // committed here; reading them back would restore an empty spellbook. Taking the else branch is
-        // proof no committed row exists, so we learn the kit from StartingSpellsFor in-memory instead.
-        if (QueryResult clsRow = CharacterDatabase.Query(Acore::StringFormat(
-            "SELECT `level`, `xp` FROM `character_multiclass_class` WHERE `guid` = {} AND `classId` = {}",
-            low, classId)))
+        // Owned in the profile == remembered (unlocked/slotted before): restore the banked spellbook from
+        // `_spell`; the class's level/xp already live in the profile pool. This is an in-memory membership
+        // check, so -- unlike the old committed-row probe -- it cannot race an async write.
+        if (mc.HasOwnedClass(classId))
         {
-            Field* f = clsRow->Fetch();
-            cp.level = f[0].Get<uint8>();
-            cp.xp = f[1].Get<uint32>();
-
             if (QueryResult spellRows = CharacterDatabase.Query(Acore::StringFormat(
                 "SELECT `spellId` FROM `character_multiclass_spell` WHERE `guid` = {} AND `classId` = {}",
                 low, classId)))
@@ -263,13 +184,10 @@ namespace Multiclass
         }
         else
         {
-            // First time this class is assigned: unlock it (create the `_class` row, bank the kit into
-            // `_spell`, add the pool entry) then start fresh with the creation loadout. Learn that kit
-            // LIVE from StartingSpellsFor in-memory -- never from a read-back of UnlockClass's async
-            // writes, which may not have committed yet (see the branch note above).
+            // First time this class is assigned: unlock it (adds it to the profile pool at level 1 and
+            // banks the kit into `_spell`) then start fresh with the creation loadout, learned LIVE from
+            // StartingSpellsFor in-memory.
             UnlockClass(player, classId);
-            cp.level = 1;
-            cp.xp = 0;
             for (uint32 spellId : StartingSpellsFor(player, classId))
                 spells.insert(spellId);
             if (spells.empty())
@@ -279,16 +197,30 @@ namespace Multiclass
                     player->getRace(), classId);
         }
 
+        // Place the class at the requested active position (owned by now, in both branches).
+        bool const placed = std::size_t(slot) < mc.GetActiveClasses().size()
+            ? mc.ReplaceActiveAt(slot, classId)
+            : mc.Activate(classId);
+        if (!placed)
+        {
+            // Defensive: the command path pre-validates slot/cap/duplicates, so this should not fire.
+            // Bail before granting so an unvalidated future caller can never leave a class
+            // learned-but-not-active (skills/spells granted while the active set stayed unchanged).
+            LOG_ERROR("module.multiclass", "ActivateClass: could not place class {} at slot {} for guid {}",
+                classId, slot, low);
+            return;
+        }
+
         g_inOrchestration = true;
-        // Grant the class's skill lines (idempotent, both branches) so the client renders its
-        // abilities and trainers; must run under the guard because SetSkill auto-learns each skill
-        // line's general spells, which would otherwise be mis-attributed by the learn hook.
+        // Grant the class's skill lines (idempotent) so the client renders its abilities and trainers; runs
+        // under the guard because SetSkill auto-learns each line's general spells, which the learn hook
+        // would otherwise mis-attribute.
         GrantClassSkills(player, classId);
         for (uint32 spellId : spells)
             player->learnSpell(spellId, false);
         g_inOrchestration = false;
 
-        state.ledger[classId] = std::move(spells);
+        ledger[classId] = std::move(spells);
     }
 
     void AttributeLearnedSpell(Player* player, uint32 spellId)
@@ -296,8 +228,8 @@ namespace Multiclass
         if (g_inOrchestration)
             return;
 
-        PlayerState* state = FindState(player->GetGUID());
-        if (!state)
+        Ledger* ledger = FindLedger(player->GetGUID());
+        if (!ledger)
             return;
 
         // Talent spells are tracked by the core talent map, not the ledger.
@@ -309,19 +241,19 @@ namespace Multiclass
 
         bool skillLineDummy = false;
         uint32 const activeOwnerMask = player->GetSpellClassOwners(
-            spellId, player->GetEffectiveClassMask(), skillLineDummy);
+            spellId, player->getClassMask(), skillLineDummy);
         uint32 const unlockedOwnerMask = player->GetSpellClassOwners(
             spellId, player->GetUnlockedClassMask(), skillLineDummy);
         uint32 const benchedOwnerMask = unlockedOwnerMask & ~activeOwnerMask;
 
-        // Active owners: track in the ledger exactly as before.
+        // Active owners: track in the ledger.
         for (uint8 classId = 1; classId < MAX_CLASSES; ++classId)
             if (activeOwnerMask & (1u << (classId - 1)))
-                state->ledger[classId].insert(spellId);
+                (*ledger)[classId].insert(spellId);
 
-        // Benched owners (unlocked but not active): bank into the remembered book. Never touch
-        // state->ledger for these -- SaveState rewrites `character_multiclass_spell` from the ledger per
-        // active slot, so a ledgered benched classId would be clobbered.
+        // Benched owners (unlocked but not active): bank into the remembered book. Never touch the ledger
+        // for these -- SaveLedger rewrites `_spell` from the ledger per active class, so a ledgered benched
+        // classId would be clobbered.
         uint32 const low = player->GetGUID().GetCounter();
         for (uint8 classId = 1; classId < MAX_CLASSES; ++classId)
         {
@@ -347,8 +279,8 @@ namespace Multiclass
         if (g_inOrchestration)
             return;
 
-        PlayerState* state = FindState(player->GetGUID());
-        if (!state)
+        Ledger* ledger = FindLedger(player->GetGUID());
+        if (!ledger)
             return;
 
         // Talent spells were never ledgered; skip for symmetry with AttributeLearnedSpell.
@@ -360,20 +292,20 @@ namespace Multiclass
 
         bool skillLineDummy = false;
         uint32 const activeOwnerMask = player->GetSpellClassOwners(
-            spellId, player->GetEffectiveClassMask(), skillLineDummy);
+            spellId, player->getClassMask(), skillLineDummy);
         for (uint8 classId = 1; classId < MAX_CLASSES; ++classId)
             if (activeOwnerMask & (1u << (classId - 1)))
             {
-                auto itr = state->ledger.find(classId);
-                if (itr != state->ledger.end())
+                auto itr = ledger->find(classId);
+                if (itr != ledger->end())
                     itr->second.erase(spellId);
             }
     }
 
     void BackfillActiveLedgers(Player* player)
     {
-        PlayerState* state = FindState(player->GetGUID());
-        if (!state)
+        Ledger* ledger = FindLedger(player->GetGUID());
+        if (!ledger)
             return;
 
         for (PlayerSpellMap::value_type const& pair : player->GetSpellMap())
@@ -387,39 +319,37 @@ namespace Multiclass
             // Professions are class-agnostic; keep them out of the per-class ledger.
             if (!IsClassAttributableSpell(spellId))
                 continue;
-            // Resolve owners via the SkillRaceClassInfo path the trainer and learn-hook use -- a
-            // class ability's ClassMask is frequently 0, so CombinedClassMask under-resolves it and
-            // would drop those spells from the ledger, truncating the banked book on the next save.
+            // Resolve owners via the SkillRaceClassInfo path the trainer and learn-hook use -- a class
+            // ability's ClassMask is frequently 0, so CombinedClassMask under-resolves it and would drop
+            // those spells from the ledger, truncating the banked book on the next save.
             bool skillLineDummy = false;
             uint32 const activeOwnerMask = player->GetSpellClassOwners(
-                spellId, player->GetEffectiveClassMask(), skillLineDummy);
+                spellId, player->getClassMask(), skillLineDummy);
             for (uint8 classId = 1; classId < MAX_CLASSES; ++classId)
                 if (activeOwnerMask & (1u << (classId - 1)))
-                    state->ledger[classId].insert(spellId);
+                    (*ledger)[classId].insert(spellId);
         }
     }
 
     void RouteExperience(Player* player, uint32 effectiveXp)
     {
-        PlayerState* state = FindState(player->GetGUID());
-        if (!state)
-            return;
-
+        MulticlassProfile& mc = player->GetMulticlassProfile();
         uint8 const maxLevel = static_cast<uint8>(sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL));
         auto const xpToNext = [](uint8 level) -> uint32 { return sObjectMgr->GetXPForLevel(level); };
         LocaleConstant const loc = player->GetSession()->GetSessionDbcLocale();
 
-        // Snapshot of the catch-up receivers is taken once, here (SlotsAtMinLevel reads the
-        // pre-award levels); every tied-lowest class gets the FULL award.
-        for (uint8 slotIdx : SlotsAtMinLevel(state->slots))
+        // GetActiveClassesAtMinLevel is a snapshot of the pre-award receivers (a copy), so mutating the
+        // profile inside the loop is safe; every tied-lowest active class gets the FULL award.
+        for (uint8 classId : mc.GetActiveClassesAtMinLevel())
         {
-            ClassProgress& cp = state->slots[slotIdx];
+            ClassProgress cp{ classId, mc.GetClassLevel(classId), mc.GetClassXp(classId) };
             if (ApplyXpToClass(cp, effectiveXp, maxLevel, xpToNext) > 0)
             {
-                if (ChrClassesEntry const* ce = sChrClassesStore.LookupEntry(cp.classId))
+                if (ChrClassesEntry const* ce = sChrClassesStore.LookupEntry(classId))
                     ChatHandler(player->GetSession()).PSendSysMessage(
                         "Your {} is now level {}!", ce->name[loc], uint32(cp.level));
             }
+            mc.SetClassProgress(classId, cp.level, cp.xp);
         }
 
         // Always reconcile: even without a ding, the native XP bar must mirror the min class.
@@ -428,29 +358,26 @@ namespace Multiclass
 
     void ReconcileDisplayLevel(Player* player)
     {
-        PlayerState* state = FindState(player->GetGUID());
-        if (!state)
-            return;
-
-        std::vector<uint8> const targets = SlotsAtMinLevel(state->slots);
+        MulticlassProfile& mc = player->GetMulticlassProfile();
+        std::vector<uint8> const targets = mc.GetActiveClassesAtMinLevel();
         if (targets.empty())
             return;   // no active class -> leave the native level untouched
 
-        uint8 const minLevel = state->slots[targets[0]].level;
-        uint32 const displayXp = state->slots[targets[0]].xp;   // lowest slot index at min
+        uint8 const minLevel = mc.GetClassLevel(targets[0]);    // first active class at min (lowest slot)
+        uint32 const displayXp = mc.GetClassXp(targets[0]);
         uint8 const cur = player->GetLevel();
 
         if (minLevel > cur)
         {
-            // Step up one level at a time, matching native GiveXP's GiveLevel(level+1) loop
-            // so each intermediate level's mail rewards / achievement criteria fire.
+            // Step up one level at a time, matching native GiveXP's GiveLevel(level+1) loop so each
+            // intermediate level's mail rewards / achievement criteria fire.
             for (uint8 lvl = cur + 1; lvl <= minLevel; ++lvl)
                 player->GiveLevel(lvl);
         }
         else if (minLevel < cur)
         {
-            // Deliberate de-level (fresh/lower slot). Single call; stepping down would emit
-            // dozens of packets. Cosmetic "level up" packet on a down-move is accepted.
+            // Deliberate de-level (fresh/lower class). Single call; stepping down would emit dozens of
+            // packets. Cosmetic "level up" packet on a down-move is accepted.
             player->GiveLevel(minLevel);
         }
 
@@ -460,42 +387,43 @@ namespace Multiclass
 
     void SwapSlotClass(Player* player, uint8 slot, uint8 newClassId)
     {
-        PlayerState& state = GetOrCreateState(player);
-        uint8 const oldClassId = state.slots[slot].classId;
+        MulticlassProfile& mc = player->GetMulticlassProfile();
+        Ledger& ledger = GetOrCreateLedger(player);
+        std::vector<uint8> const active = mc.GetActiveClasses();   // snapshot before the swap
+        uint8 const oldClassId = std::size_t(slot) < active.size() ? active[slot] : uint8(0);
 
         if (oldClassId != 0 && oldClassId != newClassId)
         {
-            // Persist the outgoing class's current state so its benched row is up to date.
-            SaveState(player->GetGUID());
+            // Bank the outgoing class's book to `_spell` while it is still active, so a later
+            // re-activation restores it. Synchronous: a rapid re-swap back to this class reads the book
+            // via a sync query and must see committed rows, not an in-flight async write.
+            SaveLedger(player, true);
 
             // Build the other still-active classes' ledgers (everything except this slot).
             std::vector<std::vector<uint32>> otherLedgers;
-            for (uint8 s = 0; s < MAX_CLASS_SLOTS; ++s)
+            for (uint8 cid : active)
             {
-                if (s == slot)
+                if (cid == oldClassId)
                     continue;
-                uint8 const cid = state.slots[s].classId;
-                if (cid == 0)
-                    continue;
-                auto itr = state.ledger.find(cid);
-                if (itr != state.ledger.end())
+                auto itr = ledger.find(cid);
+                if (itr != ledger.end())
                     otherLedgers.emplace_back(itr->second.begin(), itr->second.end());
             }
 
             // Remove exactly the outgoing class's spells, keeping any a still-active class shares.
             g_inOrchestration = true;
-            auto outItr = state.ledger.find(oldClassId);
-            if (outItr != state.ledger.end())
+            auto outItr = ledger.find(oldClassId);
+            if (outItr != ledger.end())
                 for (uint32 spellId : outItr->second)
                     if (!AnotherActiveClassOwns(spellId, otherLedgers))
                         player->removeSpell(spellId, SPEC_MASK_ALL, false);
             g_inOrchestration = false;
 
-            state.ledger.erase(oldClassId);
+            ledger.erase(oldClassId);
 
-            // Remove skill lines exclusive to the outgoing class (mirror the spell "another
-            // active class owns it" guard). Removing a skill line auto-drops its general
-            // spells, so this stays under the same orchestration guard as the spell removal.
+            // Remove skill lines exclusive to the outgoing class. No privileged render/creation class:
+            // a skill is kept only if another STILL-ACTIVE class owns it. Removing a skill line auto-drops
+            // its general spells, so this stays under the same orchestration guard as the spell removal.
             g_inOrchestration = true;
             PlayerInfo const* info = sObjectMgr->GetPlayerInfo(player->getRace(), oldClassId);
             if (info)
@@ -505,18 +433,19 @@ namespace Multiclass
                     if (!GetSkillRaceClassInfo(skill.SkillId, player->getRace(), oldClassId))
                         continue;
 
-                    bool sharedWithActiveOrRender =
-                        GetSkillRaceClassInfo(skill.SkillId, player->getRace(), state.renderClass) != nullptr;
-                    for (uint8 s = 0; !sharedWithActiveOrRender && s < MAX_CLASS_SLOTS; ++s)
+                    bool sharedWithOtherActive = false;
+                    for (uint8 cid : active)
                     {
-                        if (s == slot)
+                        if (cid == oldClassId)
                             continue;
-                        uint8 const cid = state.slots[s].classId;
-                        if (cid != 0 && GetSkillRaceClassInfo(skill.SkillId, player->getRace(), cid))
-                            sharedWithActiveOrRender = true;
+                        if (GetSkillRaceClassInfo(skill.SkillId, player->getRace(), cid))
+                        {
+                            sharedWithOtherActive = true;
+                            break;
+                        }
                     }
 
-                    if (!sharedWithActiveOrRender)
+                    if (!sharedWithOtherActive)
                         player->SetSkill(skill.SkillId, 0, 0, 0);
                 }
             }
@@ -524,7 +453,21 @@ namespace Multiclass
         }
 
         ActivateClass(player, slot, newClassId);
+        // Reconcile skills to the new active set BEFORE checking gear. A benched class's trained weapon
+        // proficiency (e.g. 2H Swords) is not a starting skill and survives the removal above, so without
+        // this the equippability check below still sees it and the item is only force-unequipped + mailed
+        // on the next login. This mirrors the login-time skill prune, keeping the live swap == a relog.
+        // Guarded like the other skill/spell removals so forgotten proficiency spells are not re-attributed.
+        g_inOrchestration = true;
+        player->PruneSkillsInvalidForActiveClasses();
+        g_inOrchestration = false;
+        // The active set — and thus weapon/armor proficiencies — is now final for this swap. Move any
+        // gear the new set can no longer equip into the bags now, instead of leaving it equipped to be
+        // force-unequipped and mailed on the next login.
+        player->MoveUnusableEquippedItemsToInventory();
         ReconcileDisplayLevel(player);
-        SaveState(player->GetGUID());
+        player->SyncMulticlassProjection();   // slot-0 may have changed -> reproject getClass()
+        player->SaveMulticlassProfile();      // persist the new set (core-owned tables)
+        SaveLedger(player);                   // persist the now-active classes' books
     }
 }

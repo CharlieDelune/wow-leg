@@ -4982,6 +4982,102 @@ bool Player::isBeingLoaded() const
     return GetSession()->PlayerLoading();
 }
 
+void Player::_LoadMulticlassProfile()
+{
+    // Transitional gate: the class-set is core-owned, but until the module is folded into core (P2) it
+    // stays opt-in via the module's switch so core and module move together. When disabled, leave
+    // getClass() and the set tables untouched -- no projection, and no churn on non-multiclass servers.
+    if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+        return;
+
+    // Cap from per-world config; 0 == unlimited (all playable classes).
+    uint32 cap = sWorld->getIntConfig(CONFIG_MULTICLASS_MAX_ACTIVE_CLASSES);
+    if (cap == 0 || cap >= MAX_CLASSES)
+        cap = MAX_CLASSES - 1;
+    m_multiclassProfile.SetMaxActiveClasses(uint8(cap));
+
+    uint32 const low = GetGUID().GetCounter();
+
+    std::vector<MulticlassProfile::ClassProgress> pool;
+    if (QueryResult result = CharacterDatabase.Query(Acore::StringFormat(
+        "SELECT `classId`, `level`, `xp` FROM `character_multiclass_class` WHERE `guid` = {}", low)))
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            pool.push_back({ fields[0].Get<uint8>(), fields[1].Get<uint8>(), fields[2].Get<uint32>() });
+        } while (result->NextRow());
+    }
+
+    std::vector<uint8> activeOrder;
+    if (QueryResult result = CharacterDatabase.Query(Acore::StringFormat(
+        "SELECT `classId` FROM `character_multiclass_slot` WHERE `guid` = {} AND `classId` <> 0 ORDER BY `slot`",
+        low)))
+    {
+        do
+        {
+            activeOrder.push_back(result->Fetch()[0].Get<uint8>());
+        } while (result->NextRow());
+    }
+
+    // First login under multiclass (no rows): a single-class profile from the character's own class.
+    if (pool.empty())
+    {
+        pool.push_back({ getClass(), GetLevel(), GetUInt32Value(PLAYER_XP) });
+        activeOrder.push_back(getClass());
+    }
+
+    m_multiclassProfile.Load(pool, activeOrder);
+
+    LOG_DEBUG("entities.player", "Multiclass profile loaded for {}: owned={}, active={}, cap={}",
+        GetGUID().ToString(), pool.size(), activeOrder.size(), uint32(m_multiclassProfile.GetMaxActiveClasses()));
+
+    SyncMulticlassProjection();
+}
+
+// Persist the owned pool (character_multiclass_class) and the active order (character_multiclass_slot).
+// The module owns character_multiclass_spell; it is never touched here.
+void Player::_SaveMulticlassProfile(CharacterDatabaseTransaction trans)
+{
+    // See _LoadMulticlassProfile: when multiclass is disabled, core never touches the set tables, so a
+    // profile that was never loaded cannot overwrite existing rows with an empty set.
+    if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+        return;
+
+    uint32 const low = GetGUID().GetCounter();
+    MulticlassProfile const& mc = m_multiclassProfile;
+
+    for (uint8 classId : mc.GetOwnedClasses())
+        trans->Append(Acore::StringFormat(
+            "INSERT INTO `character_multiclass_class` (`guid`, `classId`, `level`, `xp`) VALUES ({}, {}, {}, {})"
+            " ON DUPLICATE KEY UPDATE `level` = {}, `xp` = {}",
+            low, classId, mc.GetClassLevel(classId), mc.GetClassXp(classId),
+            mc.GetClassLevel(classId), mc.GetClassXp(classId)));
+
+    trans->Append(Acore::StringFormat("DELETE FROM `character_multiclass_slot` WHERE `guid` = {}", low));
+    uint8 slot = 0;
+    for (uint8 classId : mc.GetActiveClasses())
+        trans->Append(Acore::StringFormat(
+            "INSERT INTO `character_multiclass_slot` (`guid`, `slot`, `classId`, `unlocked`) VALUES ({}, {}, {}, 1)",
+            low, slot++, classId));
+}
+
+// getClass() is a projection of active[0]. Keep UNIT_FIELD_BYTES_0 (byte 1 = class) in sync so the
+// client wire and every getClass() reader see the slot-0 class.
+void Player::SyncMulticlassProjection()
+{
+    uint8 const projected = m_multiclassProfile.GetProjectedClass();
+    if (projected != 0 && projected != getClass())
+        SetByteValue(UNIT_FIELD_BYTES_0, 1, projected);
+}
+
+void Player::SaveMulticlassProfile()
+{
+    CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
+    _SaveMulticlassProfile(trans);
+    CharacterDatabase.CommitTransaction(trans);
+}
+
 bool Player::LoadFromDB(ObjectGuid playerGuid, CharacterDatabaseQueryHolder const& holder)
 {
     ////                                                     0     1        2     3     4        5      6    7      8     9    10    11         12         13           14         15         16
@@ -5456,6 +5552,13 @@ bool Player::LoadFromDB(ObjectGuid playerGuid, CharacterDatabaseQueryHolder cons
     InitGlyphsForLevel();
     InitTaxiNodesForLevel();
     InitRunes();
+
+    // Load the class SET before the OnPlayerLoadFromDB hook and _LoadSkills: the module's ledger load
+    // (in that hook) reads the active classes, and getClassMask() must reflect the active
+    // off-classes when the core validates skills/spells so their skill lines and spells survive. Runs
+    // after InitStatsForLevel, so base-stat init still uses the character's own class (stats are P2);
+    // this only reprojects getClass() to the slot-0 active class for display and class-mask gates.
+    _LoadMulticlassProfile();
 
     sScriptMgr->OnPlayerLoadFromDB(this);
 
@@ -7206,6 +7309,7 @@ void Player::SaveToDB(CharacterDatabaseTransaction trans, bool create, bool logo
     _SaveActions(trans);
     _SaveAuras(trans, logout);
     _SaveSkills(trans);
+    _SaveMulticlassProfile(trans);
     m_achievementMgr->SaveToDB(trans);
     m_reputationMgr->SaveToDB(trans);
     _SaveEquipmentSets(trans);
@@ -7820,7 +7924,9 @@ void Player::_SaveSpells(CharacterDatabaseTransaction trans)
             trans->Append(stmt);
         }
 
-        // xinef: insert statement for new / updated spell
+        // xinef: insert statement for new / updated spell. CHAR_INS_CHAR_SPELL is an idempotent upsert
+        // (ON DUPLICATE KEY UPDATE), so a NEW spell whose row still exists in the DB (see below: state can
+        // be flipped before a rolled-back commit) updates instead of throwing a transaction-aborting dup key.
         if (itr->second->State == PLAYERSPELL_NEW || itr->second->State == PLAYERSPELL_CHANGED)
         {
             stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CHAR_SPELL);

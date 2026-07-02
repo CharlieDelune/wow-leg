@@ -6,7 +6,8 @@ AzerothCore is a C++ MMORPG server emulator for World of Warcraft 3.3.5a (WotLK)
 
 - **Do not configure or build unless explicitly asked.** Builds are slow (CMake + compile of a large C++ codebase) and rarely needed to make code changes.
 - **Never edit SQL files outside `data/sql/updates/pending_db_*/`.** `data/sql/base/`, `data/sql/archive/`, and `data/sql/updates/db_*/` are immutable (do not modify).
-- **Do not run git commands that modify repo state** (commit, branch, merge, rebase, reset, push, …) unless explicitly requested, and do not include them in plans. Read-only git (status, diff, log) is fine.
+- **Branch-per-plan git workflow (standing authorization).** For any plan or non-trivial change: branch off `main` into a feature branch and work there, committing as freely as you like (WIP/checkpoint commits are fine). When the work is done and verified, squash the branch down to a **single commit** and merge it into `main`, so `main` stays one clean commit per plan. Squash non-interactively — `git merge --squash` from `main`, or `git reset --soft $(git merge-base main HEAD)` on the branch then re-commit — because `rebase -i` is unavailable in this environment. The final commit uses a plain conventional-commit message (subject + body, no trailers). Include this branch/squash/merge bookkeeping in plans. Trivial one-off edits may go straight to `main` at your discretion.
+- **Pushing stays explicit.** Do not `push` or otherwise publish unless asked — pushing is outward-facing. `reset`/force operations outside the squash-before-merge step also warrant a heads-up. Read-only git (status, diff, log) is always fine.
 
 ## Build
 

@@ -30,6 +30,7 @@
 #include "InstanceSaveMgr.h"
 #include "Item.h"
 #include "MapReference.h"
+#include "MulticlassProfile.h"
 #include "ObjectMgr.h"
 #include "Optional.h"
 #include "PetDefines.h"
@@ -1129,6 +1130,7 @@ public:
     static bool BuildEnumData(PreparedQueryResult result, WorldPacket* data);
 
     [[nodiscard]] bool IsClass(Classes playerClass, ClassContext context = CLASS_CONTEXT_NONE) const override;
+    [[nodiscard]] uint32 getClassMask() const override;
 
     void SetInWater(bool apply);
 
@@ -1331,6 +1333,8 @@ public:
     Item* EquipNewItem(uint16 pos, uint32 item, bool update);
     Item* EquipItem(uint16 pos, Item* pItem, bool update);
     void AutoUnequipOffhandIfNeed(bool force = false);
+    void MoveUnusableEquippedItemsToInventory();
+    void PruneSkillsInvalidForActiveClasses();
     bool StoreNewItemInBestSlots(uint32 item_id, uint32 item_count);
     void AutoStoreLoot(uint8 bag, uint8 slot, uint32 loot_id, LootStore const& store, bool broadcast = false);
     void AutoStoreLoot(uint32 loot_id, LootStore const& store, bool broadcast = false) { AutoStoreLoot(NULL_BAG, NULL_SLOT, loot_id, store, broadcast); }
@@ -1709,31 +1713,26 @@ public:
     void SendRemoveControlBar();
     [[nodiscard]] bool HasSpell(uint32 spell) const override;
     [[nodiscard]] bool HasActiveSpell(uint32 spell) const;            // show in spellbook
-    [[nodiscard]] bool IsSpellFitByClassAndRace(uint32 spell_id) const;
-    // Same fitness check as IsSpellFitByClassAndRace, but resolved against the player's UNLOCKED
-    // classes (GetUnlockedClassMask()) rather than the currently-active effective classes. Used by
-    // the trainer so a benched off-class's spells remain trainable while it is inactive.
+    // Fitness check resolved against the player's UNLOCKED classes (GetUnlockedClassMask()) rather
+    // than the currently-active classes. Used by the trainer so a benched off-class's spells remain
+    // trainable while it is inactive.
     [[nodiscard]] bool IsSpellTrainable(uint32 spell_id) const;
-    [[nodiscard]] uint32 GetEffectiveClassMask() const;
-    [[nodiscard]] uint8 GetEffectiveClassLevel(uint8 classId) const;
-    [[nodiscard]] uint8 GetEffectiveClassLevelForSpell(uint32 spell_id) const;
     // Mask of the player's UNLOCKED classes (active + benched, e.g. multiclass), or just the render
-    // class for a non-multiclass character. Distinct from GetEffectiveClassMask(), which is only the
-    // currently-ACTIVE classes; this is the wider "ever unlocked" set.
+    // class for a non-multiclass character. The wider "ever unlocked" set used for trainer access;
+    // distinct from getClassMask(), which is only the currently-ACTIVE classes.
     [[nodiscard]] uint32 GetUnlockedClassMask() const;
     // Level of an unlocked class (the active slot if currently active, else the remembered benched
     // level), or GetLevel() for a non-multiclass character.
     [[nodiscard]] uint8 GetUnlockedClassLevel(uint8 classId) const;
-    // Same as GetEffectiveClassLevelForSpell, but resolves owners against GetUnlockedClassMask() and
-    // gates on GetUnlockedClassLevel() per owning class. Used by the trainer alongside
-    // IsSpellTrainable so a benched off-class's spells stay level-gated on that class, not on
-    // whichever class currently happens to be active.
+    // Resolves owners against GetUnlockedClassMask() and gates on GetUnlockedClassLevel() per owning
+    // class. Used by the trainer alongside IsSpellTrainable so a benched off-class's spells stay
+    // level-gated on that class, not on whichever class currently happens to be active.
     [[nodiscard]] uint8 GetUnlockedClassLevelForSpell(uint32 spell_id) const;
-    // SkillRaceClassInfo for `skill` under any of the player's EFFECTIVE classes (render class plus
-    // any active off-classes), or nullptr if the skill is valid for none. Reduces exactly to
-    // GetSkillRaceClassInfo(skill, getRace(), getClass()) for a single-class character. Used by the
-    // login-time skill/spell validation so an active off-class's skill lines survive the otherwise
-    // render-class-only check that would delete them.
+    // SkillRaceClassInfo for `skill` under any of the player's EFFECTIVE (active) classes, or nullptr
+    // if the skill is valid for none. Reduces exactly to GetSkillRaceClassInfo(skill, getRace(),
+    // getClass()) for a single-class character. Used by the login-time skill/spell validation so an
+    // active off-class's skill lines survive the otherwise render-class-only check that would delete
+    // them.
     [[nodiscard]] SkillRaceClassInfoEntry const* GetEffectiveSkillRaceClassInfo(uint32 skill) const;
     // Mask-parameterized core of the spell-owner resolver: resolves which of the classes in
     // `classmask` can legitimately know spell_id, via SkillLineAbility race/class masks +
@@ -1741,10 +1740,6 @@ public:
     // line is the real authority). Sets outHasSkillLineEntries true when the spell has any
     // skill-line ability at all.
     [[nodiscard]] uint32 GetSpellClassOwners(uint32 spell_id, uint32 classmask, bool& outHasSkillLineEntries) const;
-    // Mask of the player's EFFECTIVE classes that can legitimately know spell_id. Thin wrapper over
-    // GetSpellClassOwners(spell_id, GetEffectiveClassMask(), ...). Shared by IsSpellFitByClassAndRace
-    // and GetEffectiveClassLevelForSpell so they cannot diverge.
-    [[nodiscard]] uint32 GetSpellEffectiveClassOwners(uint32 spell_id, bool& outHasSkillLineEntries) const;
     bool IsNeedCastPassiveSpellAtLearn(SpellInfo const* spellInfo) const;
 
     void SendProficiency(ItemClass itemClass, uint32 itemSubclassMask);
@@ -2631,6 +2626,12 @@ private:
 public:
     [[nodiscard]] uint32 GetChampioningFaction() const { return m_ChampioningFaction; }
     void SetChampioningFaction(uint32 faction) { m_ChampioningFaction = faction; }
+    [[nodiscard]] MulticlassProfile& GetMulticlassProfile() { return m_multiclassProfile; }
+    [[nodiscard]] MulticlassProfile const& GetMulticlassProfile() const { return m_multiclassProfile; }
+    // Keep UNIT_FIELD_BYTES_0 (class byte) in sync with the profile's projection (active[0]).
+    void SyncMulticlassProjection();
+    // Persist just the multiclass set tables (character_multiclass_class / _slot) mid-operation.
+    void SaveMulticlassProfile();
     Spell* m_spellModTakingSpell;
 
     float GetAverageItemLevel();
@@ -2809,6 +2810,7 @@ protected:
     void _LoadGroup();
     void _LoadSkills(PreparedQueryResult result);
     void _LoadSpells(PreparedQueryResult result);
+    void _LoadMulticlassProfile();
     void _LoadFriendList(PreparedQueryResult result);
     bool _LoadHomeBind(PreparedQueryResult result);
     void _LoadDeclinedNames(PreparedQueryResult result);
@@ -2836,6 +2838,7 @@ protected:
     void _SaveMonthlyQuestStatus(CharacterDatabaseTransaction trans);
     void _SaveSeasonalQuestStatus(CharacterDatabaseTransaction trans);
     void _SaveSpells(CharacterDatabaseTransaction trans);
+    void _SaveMulticlassProfile(CharacterDatabaseTransaction trans);
     void _SaveEquipmentSets(CharacterDatabaseTransaction trans);
     void _SaveEntryPoint(CharacterDatabaseTransaction trans);
     void _SaveGlyphs(CharacterDatabaseTransaction trans);
@@ -3065,6 +3068,8 @@ private:
     bool m_canKnockback;
 
     std::unique_ptr<PetStable> m_petStable;
+
+    MulticlassProfile m_multiclassProfile;
 
     // Temporary removed pet cache
     uint32 m_temporaryUnsummonedPetNumber;

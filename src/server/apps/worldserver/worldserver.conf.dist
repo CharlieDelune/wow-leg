@@ -2317,6 +2317,17 @@ Achievement.RealmFirstKillWindow = 60
 Achievement.RealmFirstRaceLimitOnePerCharacter = 1
 
 #
+#    Multiclass.MaxActiveClasses
+#        Description: Maximum number of classes a character may have ACTIVE at once. Set per
+#                     worldserver, so different realms in one list can run different values.
+#        Default:     3 - (classic: up to three active classes)
+#                     1 - (single-class server, but the class is freely swappable)
+#                     0 - (unlimited: a character can have every class active at once)
+#                     N - (up to N active classes)
+
+Multiclass.MaxActiveClasses = 3
+
+#
 ###################################################################################################
 
 ###################################################################################################

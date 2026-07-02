@@ -31,22 +31,18 @@ public:
     multiclass_playerscript() : PlayerScript("multiclass_playerscript",
         { PLAYERHOOK_ON_LOAD_FROM_DB, PLAYERHOOK_ON_LOGIN, PLAYERHOOK_ON_LOGOUT, PLAYERHOOK_ON_SAVE,
           PLAYERHOOK_ON_LEARN_SPELL, PLAYERHOOK_ON_FORGOT_SPELL,
-          PLAYERHOOK_ON_GIVE_EXP,
-          PLAYERHOOK_ON_GET_EFFECTIVE_CLASS_MASK,
-          PLAYERHOOK_ON_GET_EFFECTIVE_CLASS_LEVEL,
-          PLAYERHOOK_ON_GET_UNLOCKED_CLASS_MASK,
-          PLAYERHOOK_ON_GET_UNLOCKED_CLASS_LEVEL }) { }
+          PLAYERHOOK_ON_GIVE_EXP }) { }
 
     void OnPlayerLoadFromDB(Player* player) override
     {
         if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
             return;
 
-        // Load slot state BEFORE the core's _LoadSkills / _LoadSpells run (this hook fires earlier in
-        // Player::LoadFromDB). That way GetEffectiveClassMask() already reflects the active off-classes
-        // when the core validates skills/spells, so an active off-class's skill lines and spells survive
-        // the render-class check instead of being deleted. OnPlayerLogin reloads to a clean final state.
-        Multiclass::LoadState(player);
+        // The class SET is loaded by core (Player::_LoadMulticlassProfile) just before this hook fires,
+        // so getClassMask() already reflects the active off-classes when the core validates
+        // skills/spells (their skill lines and spells survive). Here we load only the per-class spell
+        // ledger for the active classes. OnPlayerLogin reloads to a clean final state.
+        Multiclass::LoadLedger(player);
     }
 
     void OnPlayerLogin(Player* player) override
@@ -54,7 +50,7 @@ public:
         if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
             return;
 
-        Multiclass::LoadState(player);
+        Multiclass::LoadLedger(player);
         Multiclass::BackfillActiveLedgers(player);
         Multiclass::ReconcileDisplayLevel(player);
         LOG_INFO("module.multiclass", "mod-multiclass loaded for player {}", player->GetGUID().ToString());
@@ -84,7 +80,7 @@ public:
             return;
         // Only take over XP for a player we actually manage; never zero an unmanaged
         // player's XP.
-        if (!Multiclass::FindState(player->GetGUID()))
+        if (!Multiclass::FindLedger(player->GetGUID()))
             return;
 
         // This hook fires at the XP source, BEFORE native GiveXP's own eligibility guards
@@ -108,69 +104,12 @@ public:
         amount = 0;   // suppress the native single-class XP path; the module owns all XP
     }
 
-    void OnPlayerGetEffectiveClassMask(Player const* player, uint32& classMask) override
-    {
-        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
-            return;
-
-        Multiclass::PlayerState* state = Multiclass::FindState(player->GetGUID());
-        if (!state)
-            return;
-
-        // Union the active-class bits into the render-class mask (never a narrowing).
-        classMask |= Multiclass::ActiveClassMask(state->slots);
-    }
-
-    void OnPlayerGetEffectiveClassLevel(Player const* player, uint8 classId, uint8& level) override
-    {
-        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
-            return;
-
-        Multiclass::PlayerState* state = Multiclass::FindState(player->GetGUID());
-        if (!state)
-            return;
-
-        // Report this class's own slot level; leave the default (displayed level) if it is not
-        // one of the player's active classes.
-        if (uint8 classLevel = Multiclass::ClassLevel(state->slots, classId))
-            level = classLevel;
-    }
-
-    void OnPlayerGetUnlockedClassMask(Player const* player, uint32& classMask) override
-    {
-        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
-            return;
-        Multiclass::PlayerState* state = Multiclass::FindState(player->GetGUID());
-        if (!state)
-            return;
-        classMask |= Multiclass::UnlockedClassMask(state->pool);  // never narrows the render class
-    }
-
-    void OnPlayerGetUnlockedClassLevel(Player const* player, uint8 classId, uint8& level) override
-    {
-        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
-            return;
-        Multiclass::PlayerState* state = Multiclass::FindState(player->GetGUID());
-        if (!state)
-            return;
-        // Active class: the authoritative live level is the slot (XP routing updates it mid-session,
-        // the pool may be stale until the next save). Benched class: the remembered pool level.
-        for (Multiclass::ClassProgress const& cp : state->slots)
-            if (cp.classId == classId)
-            {
-                level = cp.level;
-                return;
-            }
-        if (uint8 const poolLevel = Multiclass::UnlockedClassLevel(state->pool, classId))
-            level = poolLevel;
-    }
-
     void OnPlayerSave(Player* player) override
     {
         if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
             return;
 
-        Multiclass::SaveState(player->GetGUID());
+        Multiclass::SaveLedger(player);
     }
 
     void OnPlayerLogout(Player* player) override
@@ -178,7 +117,7 @@ public:
         if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
             return;
 
-        Multiclass::UnloadState(player->GetGUID());
+        Multiclass::UnloadLedger(player);
     }
 };
 
@@ -194,7 +133,6 @@ public:
             { "info",        HandleInfo,        SEC_PLAYER,     Console::No },
             { "setclass",    HandleSetClass,    SEC_GAMEMASTER, Console::No },
             { "setlevel",    HandleSetLevel,    SEC_GAMEMASTER, Console::No },
-            { "unlock",      HandleUnlock,      SEC_GAMEMASTER, Console::No },
             { "unlockclass", HandleUnlockClass, SEC_GAMEMASTER, Console::No }
         };
 
@@ -218,16 +156,23 @@ public:
             return true;
         }
 
-        Multiclass::PlayerState& state = Multiclass::GetOrCreateState(player);
-        handler->PSendSysMessage("Multiclass (render class {}, display level {}):",
-            state.renderClass, Multiclass::ComputeDisplayLevel(state.slots));
+        MulticlassProfile const& mc = player->GetMulticlassProfile();
+        std::vector<uint8> const active = mc.GetActiveClasses();
+        handler->PSendSysMessage("Multiclass (projected class {}, display level {}, max active {}):",
+            mc.GetProjectedClass(), player->GetLevel(), mc.GetMaxActiveClasses());
 
-        for (uint8 slot = 0; slot < Multiclass::MAX_CLASS_SLOTS; ++slot)
+        for (std::size_t slot = 0; slot < active.size(); ++slot)
         {
-            Multiclass::ClassProgress const& cp = state.slots[slot];
-            handler->PSendSysMessage("  slot {}: class {} level {} xp {} {}",
-                slot, cp.classId, cp.level, cp.xp, state.unlocked[slot] ? "" : "(locked)");
+            uint8 const classId = active[slot];
+            handler->PSendSysMessage("  slot {}: class {} level {} xp {}",
+                uint32(slot), classId, mc.GetClassLevel(classId), mc.GetClassXp(classId));
         }
+
+        handler->PSendSysMessage("Owned pool:");
+        for (uint8 classId : mc.GetOwnedClasses())
+            handler->PSendSysMessage("  class {} level {} xp {} {}",
+                classId, mc.GetClassLevel(classId), mc.GetClassXp(classId),
+                mc.HasActiveClass(classId) ? "(active)" : "(benched)");
 
         return true;
     }
@@ -244,15 +189,31 @@ public:
             return true;
         }
 
-        Multiclass::PlayerState& state = Multiclass::GetOrCreateState(player);
-        if (!Multiclass::CanAssignClass(state.slots, slot, classId))
+        MulticlassProfile& mc = player->GetMulticlassProfile();
+        std::vector<uint8> const active = mc.GetActiveClasses();
+
+        if (!MulticlassProfile::IsValidClassId(classId))
         {
-            handler->SendErrorMessage("Invalid slot/class, or class already assigned to another slot.");
+            handler->SendErrorMessage("Invalid class id (1-11, excluding 10).");
             return true;
         }
+        // Slot may target an existing active slot (replace) or the next free one (append), within the cap.
+        if (slot >= mc.GetMaxActiveClasses() || std::size_t(slot) > active.size())
+        {
+            handler->SendErrorMessage("Invalid slot: use 0..{} (next free slot is {}).",
+                mc.GetMaxActiveClasses() - 1, active.size());
+            return true;
+        }
+        // Reject a class already active in a DIFFERENT slot (a no-op self-set on this slot is fine).
+        for (std::size_t s = 0; s < active.size(); ++s)
+            if (active[s] == classId && s != std::size_t(slot))
+            {
+                handler->SendErrorMessage("Class {} is already active in slot {}.", classId, uint32(s));
+                return true;
+            }
 
         Multiclass::SwapSlotClass(player, slot, classId);
-        handler->PSendSysMessage("Slot {} set to class {} (level {}).", slot, classId, state.slots[slot].level);
+        handler->PSendSysMessage("Slot {} set to class {} (level {}).", slot, classId, mc.GetClassLevel(classId));
         return true;
     }
 
@@ -268,48 +229,25 @@ public:
             return true;
         }
 
-        if (slot >= Multiclass::MAX_CLASS_SLOTS || level < 1 || level > 80)
+        if (level < 1 || level > 80)
         {
-            handler->SendErrorMessage("Usage: .multiclass setlevel <slot 0-2> <level 1-80>");
+            handler->SendErrorMessage("Usage: .multiclass setlevel <slot> <level 1-80>");
             return true;
         }
 
-        Multiclass::PlayerState& state = Multiclass::GetOrCreateState(player);
-        if (state.slots[slot].classId == 0)
+        MulticlassProfile& mc = player->GetMulticlassProfile();
+        std::vector<uint8> const active = mc.GetActiveClasses();
+        if (std::size_t(slot) >= active.size())
         {
             handler->SendErrorMessage("Slot {} is empty.", slot);
             return true;
         }
 
-        state.slots[slot].level = level;
-        Multiclass::SaveState(player->GetGUID());
+        uint8 const classId = active[slot];
+        mc.SetClassProgress(classId, level, mc.GetClassXp(classId));
+        player->SaveMulticlassProfile();
         Multiclass::ReconcileDisplayLevel(player);
-        handler->PSendSysMessage("Slot {} level set to {}.", slot, level);
-        return true;
-    }
-
-    static bool HandleUnlock(ChatHandler* handler, uint8 slot)
-    {
-        Player* player = handler->GetPlayer();
-        if (!player)
-            return false;
-
-        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
-        {
-            handler->SendErrorMessage("The multiclass module is disabled.");
-            return true;
-        }
-
-        if (slot >= Multiclass::MAX_CLASS_SLOTS)
-        {
-            handler->SendErrorMessage("Usage: .multiclass unlock <slot 0-2>");
-            return true;
-        }
-
-        Multiclass::PlayerState& state = Multiclass::GetOrCreateState(player);
-        state.unlocked[slot] = true;
-        Multiclass::SaveState(player->GetGUID());
-        handler->PSendSysMessage("Slot {} unlocked.", slot);
+        handler->PSendSysMessage("Slot {} (class {}) level set to {}.", slot, classId, level);
         return true;
     }
 
@@ -325,13 +263,14 @@ public:
             return true;
         }
 
-        if (classId == 0 || classId >= MAX_CLASSES)
+        if (!MulticlassProfile::IsValidClassId(classId))
         {
-            handler->SendErrorMessage("Usage: .multiclass unlockclass <classId 1-11>");
+            handler->SendErrorMessage("Usage: .multiclass unlockclass <classId 1-11, excluding 10>");
             return true;
         }
 
         Multiclass::UnlockClass(player, classId);
+        player->SaveMulticlassProfile();   // persist the newly-owned class immediately (crash-safe)
         handler->PSendSysMessage("Class {} unlocked (benched). Slot it to make it active.", classId);
         return true;
     }

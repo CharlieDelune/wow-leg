@@ -28,22 +28,17 @@ class Player;
 
 namespace Multiclass
 {
-    struct PlayerState
-    {
-        SlotArray slots{};
-        std::array<bool, MAX_CLASS_SLOTS> unlocked{ { true, false, false } };
-        uint8 renderClass = 0;
-        // active classId -> learned class-specific spell IDs
-        std::unordered_map<uint8, std::unordered_set<uint32>> ledger;
-        // every unlocked class (active + benched) -> remembered level/xp
-        std::unordered_map<uint8, ClassProgress> pool;
-    };
+    // Per-character spell ledger: active classId -> learned class-specific spell IDs.
+    // The class SET (owned pool + active + per-class level/xp) now lives in
+    // Player::GetMulticlassProfile(); this module only tracks per-class spell banking
+    // (character_multiclass_spell).
+    using Ledger = std::unordered_map<uint8, std::unordered_set<uint32>>;
 
-    PlayerState& GetOrCreateState(Player* player);
-    PlayerState* FindState(ObjectGuid guid);
-    void LoadState(Player* player);
-    void SaveState(ObjectGuid guid);
-    void UnloadState(ObjectGuid guid);
+    Ledger& GetOrCreateLedger(Player* player);
+    Ledger* FindLedger(ObjectGuid guid);
+    void LoadLedger(Player* player);
+    void SaveLedger(Player* player, bool sync = false);
+    void UnloadLedger(Player* player);
     void UnlockClass(Player* player, uint8 classId);
     void ActivateClass(Player* player, uint8 slot, uint8 classId);
     void SwapSlotClass(Player* player, uint8 slot, uint8 newClassId);

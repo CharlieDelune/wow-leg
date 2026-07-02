@@ -523,9 +523,16 @@ void CharacterDatabaseConnection::DoPrepareStatements()
     PrepareStatement(CHAR_UPD_CHAR_QUESTSTATUS_REWARDED_ACTIVE, "UPDATE character_queststatus_rewarded SET active = 1 WHERE guid = ?", CONNECTION_ASYNC);
     PrepareStatement(CHAR_UPD_CHAR_QUESTSTATUS_REWARDED_ACTIVE_BY_QUEST, "UPDATE character_queststatus_rewarded SET active = 0 WHERE quest = ? AND guid = ?", CONNECTION_ASYNC);
     PrepareStatement(CHAR_DEL_CHAR_SKILL_BY_SKILL, "DELETE FROM character_skills WHERE guid = ? AND skill = ?", CONNECTION_ASYNC);
-    PrepareStatement(CHAR_INS_CHAR_SKILLS, "INSERT INTO character_skills (guid, skill, value, max) VALUES (?, ?, ?, ?)", CONNECTION_ASYNC);
+    // Idempotent upsert (see CHAR_INS_CHAR_SPELL): a SKILL_NEW row can already exist in the DB when a
+    // prior save transaction rolled back after _SaveSkills flipped in-memory state, so a bare INSERT would
+    // throw a duplicate-key error that aborts the whole character-save transaction. ON DUPLICATE self-heals.
+    PrepareStatement(CHAR_INS_CHAR_SKILLS, "INSERT INTO character_skills (guid, skill, value, max) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value), max = VALUES(max)", CONNECTION_ASYNC);
     PrepareStatement(CHAR_UDP_CHAR_SKILLS, "UPDATE character_skills SET value = ?, max = ? WHERE guid = ? AND skill = ?", CONNECTION_ASYNC);
-    PrepareStatement(CHAR_INS_CHAR_SPELL, "INSERT INTO character_spell (guid, spell, specMask) VALUES (?, ?, ?)", CONNECTION_ASYNC);
+    // Idempotent upsert, not a bare INSERT: a spell can be marked PLAYERSPELL_NEW while its row still
+    // exists in the DB (memory/DB diverge when a save transaction rolls back after _SaveSpells has already
+    // flipped in-memory state). A bare INSERT would then throw a duplicate-key error that aborts the ENTIRE
+    // character-save transaction, silently discarding class/position/inventory/skills. ON DUPLICATE self-heals.
+    PrepareStatement(CHAR_INS_CHAR_SPELL, "INSERT INTO character_spell (guid, spell, specMask) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE specMask = VALUES(specMask)", CONNECTION_ASYNC);
     PrepareStatement(CHAR_DEL_CHAR_STATS, "DELETE FROM character_stats WHERE guid = ?", CONNECTION_ASYNC);
     PrepareStatement(CHAR_INS_CHAR_STATS, "INSERT INTO character_stats (guid, maxhealth, maxpower1, maxpower2, maxpower3, maxpower4, maxpower5, maxpower6, maxpower7, strength, agility, stamina, intellect, spirit, "
                      "armor, resHoly, resFire, resNature, resFrost, resShadow, resArcane, blockPct, dodgePct, parryPct, critPct, rangedCritPct, spellCritPct, attackPower, rangedAttackPower, "

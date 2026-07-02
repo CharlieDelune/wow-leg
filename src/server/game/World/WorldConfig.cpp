@@ -705,4 +705,7 @@ void WorldConfig::BuildConfigCache()
     // Achievement
     SetConfigValue<uint32>(CONFIG_ACHIEVEMENT_REALM_FIRST_KILL_WINDOW, "Achievement.RealmFirstKillWindow", 60);
     SetConfigValue<bool>(CONFIG_ACHIEVEMENT_REALM_FIRST_RACE_LIMIT_ONE_PER_CHARACTER, "Achievement.RealmFirstRaceLimitOnePerCharacter", true);
+
+    // Multiclass
+    SetConfigValue<uint32>(CONFIG_MULTICLASS_MAX_ACTIVE_CLASSES, "Multiclass.MaxActiveClasses", 3);
 }

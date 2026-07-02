@@ -9069,7 +9069,10 @@ namespace Acore
                         return false;
                     break;
                 case TARGET_CHECK_RAID_CLASS:
-                    if (_referer->getClass() != unitTarget->getClass())
+                    // Multiclass: referer and target match when they share ANY active class. getClassMask()
+                    // is the active-set mask for players and the single-class bit for creatures, so this
+                    // reduces to the original getClass() == getClass() check for single-class units.
+                    if (!(_referer->getClassMask() & unitTarget->getClassMask()))
                         return false;
                     [[fallthrough]];
                 case TARGET_CHECK_RAID:

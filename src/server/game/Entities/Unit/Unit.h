@@ -842,7 +842,7 @@ public:
     // Class methods
     [[nodiscard]] uint8 getClass() const { return GetByteValue(UNIT_FIELD_BYTES_0, 1); }
     [[nodiscard]] virtual bool IsClass(Classes unitClass, [[maybe_unused]] ClassContext context = CLASS_CONTEXT_NONE) const { return (getClass() == unitClass); }
-    [[nodiscard]] uint32 getClassMask() const { return 1 << (getClass() - 1); }
+    [[nodiscard]] virtual uint32 getClassMask() const { return 1 << (getClass() - 1); }
 
     // Gender methods
     [[nodiscard]] uint8 getGender() const { return GetByteValue(UNIT_FIELD_BYTES_0, 2); }

@@ -178,7 +178,7 @@ bool Condition::Meets(ConditionSourceInfo& sourceInfo)
             if (Player* player = unit->ToPlayer())
                 classMask = ConditionGatesTrainerGossip(SourceType, SourceGroup, SourceEntry)
                     ? player->GetUnlockedClassMask()
-                    : player->GetEffectiveClassMask();
+                    : player->getClassMask();
 
             condMeets = (classMask & ConditionValue1) != 0;
         }

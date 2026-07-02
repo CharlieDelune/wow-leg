@@ -59,6 +59,7 @@
 #include "LootItemStorage.h"
 #include "MapMgr.h"
 #include "MiscPackets.h"
+#include "MulticlassClassPolicy.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "OutdoorPvP.h"
@@ -1304,8 +1305,27 @@ bool Player::IsClass(Classes unitClass, ClassContext context) const
     Optional<bool> scriptResult = sScriptMgr->OnPlayerIsClass(this, unitClass, context);
     if (scriptResult != std::nullopt)
         return *scriptResult;
-    else
-        return (getClass() == unitClass);
+
+    MulticlassProfile const& mc = GetMulticlassProfile();
+    // No active set (multiclass disabled / vanilla): native single-class behavior.
+    if (mc.GetActiveClasses().empty())
+        return getClass() == unitClass;
+
+    // Creation/origin identity resolves to the single projected class; everything else counts the
+    // whole active set. See MulticlassClassPolicy.h.
+    return MulticlassIsProjectedOnlyContext(context)
+        ? mc.GetProjectedClass() == uint8(unitClass)
+        : mc.HasActiveClass(uint8(unitClass));
+}
+
+// getClassMask() is the class-eligibility mask every `& getClassMask()` gate consults (items, quests,
+// talent tabs, reputation, mail, wand-users). Return the OR of the ACTIVE classes so any active class
+// qualifies. Falls back to the native single-class bit when there is no active set (multiclass
+// disabled / vanilla), so non-multiclass servers and pre-load construction are unaffected.
+uint32 Player::getClassMask() const
+{
+    uint32 const active = GetMulticlassProfile().GetActiveClassMask();
+    return active ? active : Unit::getClassMask();
 }
 
 void Player::ToggleAFK()
@@ -12475,57 +12495,30 @@ uint32 Player::GetSpellClassOwners(uint32 spell_id, uint32 classmask, bool& outH
     return owners;
 }
 
-uint32 Player::GetSpellEffectiveClassOwners(uint32 spell_id, bool& outHasSkillLineEntries) const
-{
-    return GetSpellClassOwners(spell_id, GetEffectiveClassMask(), outHasSkillLineEntries);
-}
-
-bool Player::IsSpellFitByClassAndRace(uint32 spell_id) const
-{
-    bool hasSkillLineEntries = false;
-    uint32 const owners = GetSpellEffectiveClassOwners(spell_id, hasSkillLineEntries);
-
-    // No skill-line ability => not class/skill gated => fit. Otherwise fit iff at least one of the
-    // player's effective classes legitimately owns it.
-    return !hasSkillLineEntries || owners != 0;
-}
-
 bool Player::IsSpellTrainable(uint32 spell_id) const
 {
     bool hasSkillLineEntries = false;
     uint32 const owners = GetSpellClassOwners(spell_id, GetUnlockedClassMask(), hasSkillLineEntries);
 
-    // Same fitness rule as IsSpellFitByClassAndRace, but resolved against the player's unlocked
-    // classes so a benched off-class's spells remain trainable while it is inactive.
+    // Fitness rule resolved against the player's unlocked (active + benched) classes so a benched
+    // off-class's spells remain trainable while it is inactive. No skill-line ability => not
+    // class/skill gated => trainable; otherwise trainable iff an unlocked class legitimately owns it.
     return !hasSkillLineEntries || owners != 0;
-}
-
-uint32 Player::GetEffectiveClassMask() const
-{
-    uint32 classMask = getClassMask();
-    sScriptMgr->OnPlayerGetEffectiveClassMask(this, classMask);
-    return classMask;
-}
-
-uint8 Player::GetEffectiveClassLevel(uint8 classId) const
-{
-    uint8 level = GetLevel();
-    sScriptMgr->OnPlayerGetEffectiveClassLevel(this, classId, level);
-    return level;
 }
 
 uint32 Player::GetUnlockedClassMask() const
 {
-    uint32 classMask = getClassMask();
-    sScriptMgr->OnPlayerGetUnlockedClassMask(this, classMask);
-    return classMask;
+    // OWNED classes (active + benched) — the trainer/access mask. Falls back to the native
+    // single-class bit when there is no profile (multiclass disabled / vanilla).
+    uint32 const owned = GetMulticlassProfile().GetOwnedClassMask();
+    return owned ? owned : Unit::getClassMask();
 }
 
 uint8 Player::GetUnlockedClassLevel(uint8 classId) const
 {
-    uint8 level = GetLevel();
-    sScriptMgr->OnPlayerGetUnlockedClassLevel(this, classId, level);
-    return level;
+    // Owned class -> its remembered pool level; otherwise the displayed level (matches the old hook).
+    uint8 const level = GetMulticlassProfile().GetClassLevel(classId);
+    return level ? level : GetLevel();
 }
 
 SkillRaceClassInfoEntry const* Player::GetEffectiveSkillRaceClassInfo(uint32 skill) const
@@ -12534,7 +12527,7 @@ SkillRaceClassInfoEntry const* Player::GetEffectiveSkillRaceClassInfo(uint32 ski
     // active multiclass off-classes — returning the first matching SkillRaceClassInfo, or nullptr if
     // none match. For a normal single-class character the effective mask is just the render class, so
     // this reduces exactly to GetSkillRaceClassInfo(skill, getRace(), getClass()).
-    uint32 const classMask = GetEffectiveClassMask();
+    uint32 const classMask = getClassMask();
     for (uint8 classId = 1; classId < MAX_CLASSES; ++classId)
         if (classMask & (1 << (classId - 1)))
             if (SkillRaceClassInfoEntry const* rcInfo = GetSkillRaceClassInfo(skill, getRace(), classId))
@@ -12542,41 +12535,12 @@ SkillRaceClassInfoEntry const* Player::GetEffectiveSkillRaceClassInfo(uint32 ski
     return nullptr;
 }
 
-uint8 Player::GetEffectiveClassLevelForSpell(uint32 spell_id) const
-{
-    bool hasSkillLineEntries = false;
-    uint32 const owners = GetSpellEffectiveClassOwners(spell_id, hasSkillLineEntries);
-
-    // Unowned (general/profession spell, or no effective class owns it): gate on the displayed
-    // level, exactly as before. This is the fallback branch; the fitness gate already excludes
-    // spells no effective class owns from any trainer list.
-    if (!owners)
-        return GetLevel();
-
-    // Owned: gate on the HIGHEST owning-class level, so a spell shared by more than one active
-    // class is trainable when any owning class qualifies.
-    uint8 best = 0;
-    for (uint8 classId = 1; classId < MAX_CLASSES; ++classId)
-    {
-        uint32 const classBit = 1u << (classId - 1);
-        if (!(owners & classBit))
-            continue;
-
-        uint8 const classLevel = GetEffectiveClassLevel(classId);
-        if (classLevel > best)
-            best = classLevel;
-    }
-
-    return best;
-}
-
 uint8 Player::GetUnlockedClassLevelForSpell(uint32 spell_id) const
 {
     bool hasSkillLineEntries = false;
     uint32 const owners = GetSpellClassOwners(spell_id, GetUnlockedClassMask(), hasSkillLineEntries);
 
-    // Unowned (general/profession spell, or no unlocked class owns it): gate on the displayed level,
-    // exactly as GetEffectiveClassLevelForSpell does for the effective-mask case.
+    // Unowned (general/profession spell, or no unlocked class owns it): gate on the displayed level.
     if (!owners)
         return GetLevel();
 
@@ -12726,6 +12690,75 @@ void Player::AutoUnequipOffhandIfNeed(bool force /*= false*/)
         CharacterDatabase.CommitTransaction(trans);
     }
     UpdateTitansGrip();
+}
+
+// After the active class set changes (a multiclass class swap), reconcile the player's skills to the
+// new active set exactly as _LoadSkills does at login: drop every skill no active class can have. This
+// matters most for a benched class's TRAINED weapon/armor proficiency (e.g. Two-Handed Swords, skill
+// 55) — it is granted by a proficiency spell rather than a starting skill, so the swap's own removal
+// (which only strips playercreateinfo skills + ledgered spells) leaves it behind. Without this the live
+// state keeps stale proficiencies that the next login prune removes, so gear the new set cannot use
+// still passes CanEquipItem at swap time and is only force-unequipped + mailed on the next relog.
+// Running the same reconciliation here keeps the live swap in lockstep with a relog, which is what
+// makes MoveUnusableEquippedItemsToInventory (below) reliable.
+void Player::PruneSkillsInvalidForActiveClasses()
+{
+    std::vector<uint16> invalid;
+    for (auto const& skillEntry : mSkillStatus)
+    {
+        if (skillEntry.second.uState == SKILL_DELETED)
+            continue;
+        if (!GetEffectiveSkillRaceClassInfo(skillEntry.first))
+            invalid.push_back(uint16(skillEntry.first));
+    }
+
+    for (uint16 skillId : invalid)
+        SetSkill(skillId, 0, 0, 0);
+}
+
+// After the active class set changes (a multiclass class swap), gear equipped under the outgoing
+// class(es) may no longer be usable — most commonly a lost weapon proficiency. Sweep every equipped
+// slot and move each item that can no longer be equipped into a free bag slot; only if the bags are
+// full does it fall back to mail (the same safety net _LoadInventory uses at login). This keeps the
+// item in hand instead of forcing the player to relog and reclaim it from the mailbox, and it never
+// destroys the item. Mirrors AutoUnequipOffhandIfNeed's store-or-mail handling.
+void Player::MoveUnusableEquippedItemsToInventory()
+{
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        Item* item = GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!item)
+            continue;
+
+        // A class swap can only strip an item's *usability* (proficiency / class / level), never its
+        // slot placement, so test CanUseItem — not CanEquipItem. CanEquipItem assumes an empty target
+        // slot (swap = false) and would false-fail for every already-equipped item, because the slot is
+        // occupied by the item itself, sweeping usable gear (cloth, shirt) out too. not_loading = false
+        // skips only the transient "you are dead" check so a ghost-state swap does not strip usable gear;
+        // the proficiency/class/level checks that a swap actually changes still fire.
+        if (CanUseItem(item, false) == EQUIP_ERR_OK)
+            continue;
+
+        ItemPosCountVec dest;
+        if (CanStoreItem(NULL_BAG, NULL_SLOT, dest, item, false) == EQUIP_ERR_OK)
+        {
+            RemoveItem(INVENTORY_SLOT_BAG_0, slot, true);
+            StoreItem(dest, item, true);
+        }
+        else
+        {
+            // Bags full: fall back to mail so the item is never lost.
+            MoveItemFromInventory(INVENTORY_SLOT_BAG_0, slot, true);
+            CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
+            item->DeleteFromInventoryDB(trans);
+            item->SaveToDB(trans);
+
+            std::string subject = GetSession()->GetAcoreString(LANG_NOT_EQUIPPED_ITEM);
+            MailDraft(subject, "There were problems with equipping one or several items").AddItem(item).SendMailTo(trans, this, MailSender(this, MAIL_STATIONERY_GM), MAIL_CHECK_MASK_COPIED);
+
+            CharacterDatabase.CommitTransaction(trans);
+        }
+    }
 }
 
 OutdoorPvP* Player::GetOutdoorPvP() const

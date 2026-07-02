@@ -314,7 +314,7 @@ bool AchievementCriteriaData::Meets(uint32 criteria_id, Player const* source, Un
         case ACHIEVEMENT_CRITERIA_DATA_TYPE_T_PLAYER_CLASS_RACE:
             if (!target || !target->IsPlayer())
                 return false;
-            if (classRace.class_id && classRace.class_id != target->ToPlayer()->getClass())
+            if (classRace.class_id && !(target->ToPlayer()->getClassMask() & (1u << (classRace.class_id - 1))))
                 return false;
             if (classRace.race_id && classRace.race_id != target->ToPlayer()->getRace())
                 return false;
@@ -322,7 +322,7 @@ bool AchievementCriteriaData::Meets(uint32 criteria_id, Player const* source, Un
         case ACHIEVEMENT_CRITERIA_DATA_TYPE_S_PLAYER_CLASS_RACE:
             if (!source || !source->IsPlayer())
                 return false;
-            if (classRace.class_id && classRace.class_id != source->ToPlayer()->getClass())
+            if (classRace.class_id && !(source->ToPlayer()->getClassMask() & (1u << (classRace.class_id - 1))))
                 return false;
             if (classRace.race_id && classRace.race_id != source->ToPlayer()->getRace())
                 return false;

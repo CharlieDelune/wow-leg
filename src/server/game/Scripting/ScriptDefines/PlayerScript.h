@@ -215,10 +215,6 @@ enum PlayerHook
     PLAYERHOOK_ON_GET_REPUTATION_PRICE_DISCOUNT,
     PLAYERHOOK_ON_LEARN_TAXI_NODE,
     PLAYERHOOK_ON_BEFORE_GET_LEVEL_FOR_XP_GAIN,
-    PLAYERHOOK_ON_GET_EFFECTIVE_CLASS_MASK,
-    PLAYERHOOK_ON_GET_EFFECTIVE_CLASS_LEVEL,
-    PLAYERHOOK_ON_GET_UNLOCKED_CLASS_MASK,
-    PLAYERHOOK_ON_GET_UNLOCKED_CLASS_LEVEL,
     PLAYERHOOK_END
 };
 
@@ -306,24 +302,6 @@ public:
 
     // Called when a player forgot spell
     virtual void OnPlayerForgotSpell(Player* /*player*/, uint32 /*spellID*/) {}
-
-    // Called to let modules widen a player's effective class mask (e.g. multiclass). Modules
-    // OR their extra class bits into classMask; default leaves the render-class mask unchanged.
-    virtual void OnPlayerGetEffectiveClassMask(Player const* /*player*/, uint32& /*classMask*/) { }
-
-    // Called to let modules report a player's per-class level for a given class. Modules set
-    // level to that class's level; default leaves the passed-in (displayed) level unchanged.
-    virtual void OnPlayerGetEffectiveClassLevel(Player const* /*player*/, uint8 /*classId*/, uint8& /*level*/) { }
-
-    // Called to let modules widen a player's unlocked class mask (e.g. multiclass active + benched
-    // classes). Modules OR their extra class bits into classMask; default leaves the render-class
-    // mask unchanged.
-    virtual void OnPlayerGetUnlockedClassMask(Player const* /*player*/, uint32& /*classMask*/) { }
-
-    // Called to let modules report a player's per-class level for an unlocked (active or benched)
-    // class. Modules set level to that class's level; default leaves the passed-in (displayed)
-    // level unchanged.
-    virtual void OnPlayerGetUnlockedClassLevel(Player const* /*player*/, uint8 /*classId*/, uint8& /*level*/) { }
 
     // Called when a duel is requested
     virtual void OnPlayerDuelRequest(Player* /*target*/, Player* /*challenger*/) { }
