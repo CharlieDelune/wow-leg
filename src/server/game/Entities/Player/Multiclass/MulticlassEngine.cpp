@@ -15,7 +15,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "MulticlassState.h"
+#include "MulticlassEngine.h"
 #include "MulticlassSpells.h"
 #include "Chat.h"
 #include "DatabaseEnv.h"
@@ -32,9 +32,6 @@
 
 namespace
 {
-    std::unordered_map<ObjectGuid, Multiclass::Ledger> g_ledgers;
-    bool g_inOrchestration = false;  // suppress learn/forget capture during our own grants/removes
-
     // A spell is class-attributable (bankable/ledgerable) only if it is a genuine class ability. Primary
     // and secondary professions carry per-class SkillRaceClassInfo entries, so the ownership resolver would
     // otherwise treat First Aid / Cooking / Alchemy / etc. as class-owned and bank them per class. Professions
@@ -54,19 +51,12 @@ namespace
 
 namespace Multiclass
 {
-    Ledger* FindLedger(ObjectGuid guid)
-    {
-        auto itr = g_ledgers.find(guid);
-        return itr == g_ledgers.end() ? nullptr : &itr->second;
-    }
-
     // The class SET is loaded by core (Player::_LoadMulticlassProfile) before this runs; here we load
     // only the per-class learned-spell ledger, for the classes currently active in the profile.
     void LoadLedger(Player* player)
     {
-        ObjectGuid const guid = player->GetGUID();
-        uint32 const low = guid.GetCounter();
-        Ledger& ledger = g_ledgers[guid];
+        uint32 const low = player->GetGUID().GetCounter();
+        Ledger& ledger = player->GetMulticlassLedger();
         ledger.clear();
 
         for (uint8 classId : player->GetMulticlassProfile().GetActiveClasses())
@@ -83,21 +73,11 @@ namespace Multiclass
         }
     }
 
-    Ledger& GetOrCreateLedger(Player* player)
-    {
-        if (Ledger* existing = FindLedger(player->GetGUID()))
-            return *existing;
-        LoadLedger(player);
-        return g_ledgers[player->GetGUID()];
-    }
-
     // Persist only `character_multiclass_spell`, for the active classes. Core owns the set tables
     // (character_multiclass_class / _slot) via Player::_SaveMulticlassProfile.
     void SaveLedger(Player* player, bool sync)
     {
-        Ledger* ledger = FindLedger(player->GetGUID());
-        if (!ledger)
-            return;
+        Ledger& ledger = player->GetMulticlassLedger();
 
         uint32 const low = player->GetGUID().GetCounter();
         CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
@@ -106,8 +86,8 @@ namespace Multiclass
             trans->Append(Acore::StringFormat(
                 "DELETE FROM `character_multiclass_spell` WHERE `guid` = {} AND `classId` = {}", low, classId));
 
-            auto itr = ledger->find(classId);
-            if (itr != ledger->end())
+            auto itr = ledger.find(classId);
+            if (itr != ledger.end())
                 for (uint32 spellId : itr->second)
                     trans->Append(Acore::StringFormat(
                         "INSERT INTO `character_multiclass_spell` (`guid`, `classId`, `spellId`) VALUES ({}, {}, {})",
@@ -121,12 +101,6 @@ namespace Multiclass
             CharacterDatabase.DirectCommitTransaction(trans);
         else
             CharacterDatabase.CommitTransaction(trans);
-    }
-
-    void UnloadLedger(Player* player)
-    {
-        SaveLedger(player);
-        g_ledgers.erase(player->GetGUID());
     }
 
     void UnlockClass(Player* player, uint8 classId)
@@ -155,14 +129,14 @@ namespace Multiclass
         // this kit back with a sync query and must see it committed, not an in-flight async write.
         CharacterDatabase.DirectCommitTransaction(trans);
 
-        LOG_INFO("module.multiclass", "UnlockClass: guid {} unlocked class {} with {} starter spells",
+        LOG_INFO("entities.player.multiclass", "UnlockClass: guid {} unlocked class {} with {} starter spells",
             low, classId, starters.size());
     }
 
     void ActivateClass(Player* player, uint8 slot, uint8 classId)
     {
         MulticlassProfile& mc = player->GetMulticlassProfile();
-        Ledger& ledger = GetOrCreateLedger(player);
+        Ledger& ledger = player->GetMulticlassLedger();
         uint32 const low = player->GetGUID().GetCounter();
 
         std::unordered_set<uint32> spells;
@@ -191,7 +165,7 @@ namespace Multiclass
             for (uint32 spellId : StartingSpellsFor(player, classId))
                 spells.insert(spellId);
             if (spells.empty())
-                LOG_INFO("module.multiclass",
+                LOG_INFO("entities.player.multiclass",
                     "ActivateClass: no creation spells for race {} class {}"
                     " (race-invalid combo); class starts spell-less",
                     player->getRace(), classId);
@@ -206,31 +180,29 @@ namespace Multiclass
             // Defensive: the command path pre-validates slot/cap/duplicates, so this should not fire.
             // Bail before granting so an unvalidated future caller can never leave a class
             // learned-but-not-active (skills/spells granted while the active set stayed unchanged).
-            LOG_ERROR("module.multiclass", "ActivateClass: could not place class {} at slot {} for guid {}",
+            LOG_ERROR("entities.player.multiclass", "ActivateClass: could not place class {} at slot {} for guid {}",
                 classId, slot, low);
             return;
         }
 
-        g_inOrchestration = true;
+        player->SetMulticlassInOrchestration(true);
         // Grant the class's skill lines (idempotent) so the client renders its abilities and trainers; runs
         // under the guard because SetSkill auto-learns each line's general spells, which the learn hook
         // would otherwise mis-attribute.
         GrantClassSkills(player, classId);
         for (uint32 spellId : spells)
             player->learnSpell(spellId, false);
-        g_inOrchestration = false;
+        player->SetMulticlassInOrchestration(false);
 
         ledger[classId] = std::move(spells);
     }
 
     void AttributeLearnedSpell(Player* player, uint32 spellId)
     {
-        if (g_inOrchestration)
+        if (player->IsMulticlassInOrchestration())
             return;
 
-        Ledger* ledger = FindLedger(player->GetGUID());
-        if (!ledger)
-            return;
+        Ledger& ledger = player->GetMulticlassLedger();
 
         // Talent spells are tracked by the core talent map, not the ledger.
         if (IsTalentSpell(spellId))
@@ -249,7 +221,7 @@ namespace Multiclass
         // Active owners: track in the ledger.
         for (uint8 classId = 1; classId < MAX_CLASSES; ++classId)
             if (activeOwnerMask & (1u << (classId - 1)))
-                (*ledger)[classId].insert(spellId);
+                ledger[classId].insert(spellId);
 
         // Benched owners (unlocked but not active): bank into the remembered book. Never touch the ledger
         // for these -- SaveLedger rewrites `_spell` from the ledger per active class, so a ledgered benched
@@ -268,20 +240,18 @@ namespace Multiclass
         // an active class also owns stays live for that class while still being banked for the benched one.
         if (benchedOwnerMask != 0 && activeOwnerMask == 0)
         {
-            g_inOrchestration = true;
+            player->SetMulticlassInOrchestration(true);
             player->removeSpell(spellId, SPEC_MASK_ALL, false);
-            g_inOrchestration = false;
+            player->SetMulticlassInOrchestration(false);
         }
     }
 
     void AttributeForgotSpell(Player* player, uint32 spellId)
     {
-        if (g_inOrchestration)
+        if (player->IsMulticlassInOrchestration())
             return;
 
-        Ledger* ledger = FindLedger(player->GetGUID());
-        if (!ledger)
-            return;
+        Ledger& ledger = player->GetMulticlassLedger();
 
         // Talent spells were never ledgered; skip for symmetry with AttributeLearnedSpell.
         if (IsTalentSpell(spellId))
@@ -296,17 +266,15 @@ namespace Multiclass
         for (uint8 classId = 1; classId < MAX_CLASSES; ++classId)
             if (activeOwnerMask & (1u << (classId - 1)))
             {
-                auto itr = ledger->find(classId);
-                if (itr != ledger->end())
+                auto itr = ledger.find(classId);
+                if (itr != ledger.end())
                     itr->second.erase(spellId);
             }
     }
 
     void BackfillActiveLedgers(Player* player)
     {
-        Ledger* ledger = FindLedger(player->GetGUID());
-        if (!ledger)
-            return;
+        Ledger& ledger = player->GetMulticlassLedger();
 
         for (PlayerSpellMap::value_type const& pair : player->GetSpellMap())
         {
@@ -327,7 +295,7 @@ namespace Multiclass
                 spellId, player->getClassMask(), skillLineDummy);
             for (uint8 classId = 1; classId < MAX_CLASSES; ++classId)
                 if (activeOwnerMask & (1u << (classId - 1)))
-                    (*ledger)[classId].insert(spellId);
+                    ledger[classId].insert(spellId);
         }
     }
 
@@ -388,7 +356,7 @@ namespace Multiclass
     void SwapSlotClass(Player* player, uint8 slot, uint8 newClassId)
     {
         MulticlassProfile& mc = player->GetMulticlassProfile();
-        Ledger& ledger = GetOrCreateLedger(player);
+        Ledger& ledger = player->GetMulticlassLedger();
         std::vector<uint8> const active = mc.GetActiveClasses();   // snapshot before the swap
         uint8 const oldClassId = std::size_t(slot) < active.size() ? active[slot] : uint8(0);
 
@@ -411,20 +379,20 @@ namespace Multiclass
             }
 
             // Remove exactly the outgoing class's spells, keeping any a still-active class shares.
-            g_inOrchestration = true;
+            player->SetMulticlassInOrchestration(true);
             auto outItr = ledger.find(oldClassId);
             if (outItr != ledger.end())
                 for (uint32 spellId : outItr->second)
                     if (!AnotherActiveClassOwns(spellId, otherLedgers))
                         player->removeSpell(spellId, SPEC_MASK_ALL, false);
-            g_inOrchestration = false;
+            player->SetMulticlassInOrchestration(false);
 
             ledger.erase(oldClassId);
 
             // Remove skill lines exclusive to the outgoing class. No privileged render/creation class:
             // a skill is kept only if another STILL-ACTIVE class owns it. Removing a skill line auto-drops
             // its general spells, so this stays under the same orchestration guard as the spell removal.
-            g_inOrchestration = true;
+            player->SetMulticlassInOrchestration(true);
             PlayerInfo const* info = sObjectMgr->GetPlayerInfo(player->getRace(), oldClassId);
             if (info)
             {
@@ -449,7 +417,7 @@ namespace Multiclass
                         player->SetSkill(skill.SkillId, 0, 0, 0);
                 }
             }
-            g_inOrchestration = false;
+            player->SetMulticlassInOrchestration(false);
         }
 
         ActivateClass(player, slot, newClassId);
@@ -458,9 +426,9 @@ namespace Multiclass
         // this the equippability check below still sees it and the item is only force-unequipped + mailed
         // on the next login. This mirrors the login-time skill prune, keeping the live swap == a relog.
         // Guarded like the other skill/spell removals so forgotten proficiency spells are not re-attributed.
-        g_inOrchestration = true;
+        player->SetMulticlassInOrchestration(true);
         player->PruneSkillsInvalidForActiveClasses();
-        g_inOrchestration = false;
+        player->SetMulticlassInOrchestration(false);
         // The active set — and thus weapon/armor proficiencies — is now final for this swap. Move any
         // gear the new set can no longer equip into the bags now, instead of leaving it equipped to be
         // force-unequipped and mailed on the next login.

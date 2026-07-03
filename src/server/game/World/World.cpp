@@ -186,7 +186,18 @@ void World::LoadConfigSettings(bool reload)
     if (!reload)
         sWorldSessionMgr->SetPlayerAmountLimit(sConfigMgr->GetOption<int32>("PlayerLimit", 1000));
 
+    // Capture the pre-reload master switch so we can detect Multiclass.Enable flipping on live (below).
+    bool const multiclassWasEnabled = reload && getBoolConfig(CONFIG_MULTICLASS_ENABLE);
+
     _worldConfig.Initialize(reload);
+
+    // A live `.reload config` that turns Multiclass.Enable on cannot run the login-time seed
+    // (_LoadMulticlassProfile) for characters already in-world -- they never relog -- so their profile
+    // would stay empty and managed code would reconcile them down to nothing. Seed everyone online now.
+    if (reload && !multiclassWasEnabled && getBoolConfig(CONFIG_MULTICLASS_ENABLE))
+        for (auto const& itr : sWorldSessionMgr->GetAllSessions())
+            if (Player* player = itr.second->GetPlayer())
+                player->ApplyLiveMulticlassEnable();
 
     for (uint8 i = 0; i < MAX_MOVE_TYPE; ++i)
         playerBaseMoveSpeed[i] = baseMoveSpeed[i] * getRate(RATE_MOVESPEED_PLAYER);

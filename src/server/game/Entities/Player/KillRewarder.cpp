@@ -183,7 +183,10 @@ void KillRewarder::_RewardXP(Player* player, float rate)
         // 4.2.3. Give XP to player.
         sScriptMgr->OnPlayerGiveXP(player, xp, _victim, PlayerXPSource::XPSOURCE_KILL);
         player->GiveXP(xp, _victim, _groupRate);
-        if (Pet* pet = player->GetPet())
+        // A managed (multiclass) character routes its own kill XP to the active classes inside GiveXP, but
+        // its pet is deliberately kept at zero kill XP (pets need far less and are levelled by other means).
+        // Preserve that throttle by skipping the pet award when managed.
+        if (Pet* pet = player->GetPet(); pet && !player->IsMulticlassManaged())
             // 4.2.4. If player has pet, reward pet with XP (100% for single player, 50% for group case).
             pet->GivePetXP(_group ? xp / 2 : xp);
     }

@@ -4985,9 +4985,9 @@ bool Player::isBeingLoaded() const
 void Player::_LoadMulticlassProfile()
 {
     // Transitional gate: the class-set is core-owned, but until the module is folded into core (P2) it
-    // stays opt-in via the module's switch so core and module move together. When disabled, leave
-    // getClass() and the set tables untouched -- no projection, and no churn on non-multiclass servers.
-    if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+    // stays opt-in via the core master switch. When disabled, leave getClass() and the set tables
+    // untouched -- no projection, and no churn on non-multiclass servers.
+    if (!sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
         return;
 
     // Cap from per-world config; 0 == unlimited (all playable classes).
@@ -5041,7 +5041,7 @@ void Player::_SaveMulticlassProfile(CharacterDatabaseTransaction trans)
 {
     // See _LoadMulticlassProfile: when multiclass is disabled, core never touches the set tables, so a
     // profile that was never loaded cannot overwrite existing rows with an empty set.
-    if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+    if (!sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
         return;
 
     uint32 const low = GetGUID().GetCounter();
@@ -5076,6 +5076,26 @@ void Player::SaveMulticlassProfile()
     CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
     _SaveMulticlassProfile(trans);
     CharacterDatabase.CommitTransaction(trans);
+}
+
+void Player::ApplyLiveMulticlassEnable()
+{
+    // `.reload config` turned Multiclass.Enable on while this character was already loaded, so the
+    // login-time seed in _LoadMulticlassProfile never ran for it (that path is only reached from
+    // LoadFromDB). Run it now against the live class/level/xp, load the ledger, and persist -- without
+    // this the profile stays empty, and every IsMulticlassManaged() path (plus the class-swap skill
+    // reconcile) treats the character as owning no classes and strips it down to nothing.
+    if (!sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
+        return;
+
+    // Already seeded: logged in after the flip, or a prior live-enable this session. A seeded profile
+    // always keeps at least the creation class active, so an empty active set means "not yet seeded".
+    if (!m_multiclassProfile.GetActiveClasses().empty())
+        return;
+
+    _LoadMulticlassProfile();       // seeds from getClass()/GetLevel()/PLAYER_XP when no rows exist
+    Multiclass::LoadLedger(this);
+    SaveMulticlassProfile();        // persist the seeded set tables immediately (crash-safe)
 }
 
 bool Player::LoadFromDB(ObjectGuid playerGuid, CharacterDatabaseQueryHolder const& holder)
@@ -5561,6 +5581,9 @@ bool Player::LoadFromDB(ObjectGuid playerGuid, CharacterDatabaseQueryHolder cons
     _LoadMulticlassProfile();
 
     sScriptMgr->OnPlayerLoadFromDB(this);
+
+    if (sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
+        Multiclass::LoadLedger(this);
 
     // make sure the unit is considered out of combat for proper loading
     ClearInCombat();
@@ -7290,6 +7313,9 @@ void Player::SaveToDB(CharacterDatabaseTransaction trans, bool create, bool logo
 
     if (!create)
         sScriptMgr->OnPlayerSave(this);
+
+    if (!create && sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
+        Multiclass::SaveLedger(this);
 
     _SaveCharacter(create, trans);
 

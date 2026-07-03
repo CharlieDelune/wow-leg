@@ -15,8 +15,8 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef MOD_MULTICLASS_STATE_H
-#define MOD_MULTICLASS_STATE_H
+#ifndef MULTICLASS_ENGINE_H
+#define MULTICLASS_ENGINE_H
 
 #include "MulticlassLogic.h"
 #include "ObjectGuid.h"
@@ -30,15 +30,12 @@ namespace Multiclass
 {
     // Per-character spell ledger: active classId -> learned class-specific spell IDs.
     // The class SET (owned pool + active + per-class level/xp) now lives in
-    // Player::GetMulticlassProfile(); this module only tracks per-class spell banking
+    // Player::GetMulticlassProfile(); this ledger only tracks per-class spell banking
     // (character_multiclass_spell).
     using Ledger = std::unordered_map<uint8, std::unordered_set<uint32>>;
 
-    Ledger& GetOrCreateLedger(Player* player);
-    Ledger* FindLedger(ObjectGuid guid);
     void LoadLedger(Player* player);
     void SaveLedger(Player* player, bool sync = false);
-    void UnloadLedger(Player* player);
     void UnlockClass(Player* player, uint8 classId);
     void ActivateClass(Player* player, uint8 slot, uint8 classId);
     void SwapSlotClass(Player* player, uint8 slot, uint8 newClassId);

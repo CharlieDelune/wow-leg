@@ -532,6 +532,12 @@ enum CharacterDatabaseStatements : uint32
     CHAR_REP_CHAR_SETTINGS,
     CHAR_DEL_CHAR_SETTINGS,
 
+    // Multiclass class-set + spell ledger, purged on character delete so a recycled guid never
+    // inherits a deleted character's classes/spells. Applied unconditionally (not gated on Multiclass.Enable).
+    CHAR_DEL_CHAR_MULTICLASS_CLASS,
+    CHAR_DEL_CHAR_MULTICLASS_SLOT,
+    CHAR_DEL_CHAR_MULTICLASS_SPELL,
+
     CHAR_SELECT_INSTANCE_SAVED_DATA,
     CHAR_INSERT_INSTANCE_SAVED_DATA,
     CHAR_DELETE_INSTANCE_SAVED_DATA,

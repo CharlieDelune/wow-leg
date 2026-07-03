@@ -2317,6 +2317,16 @@ Achievement.RealmFirstKillWindow = 60
 Achievement.RealmFirstRaceLimitOnePerCharacter = 1
 
 #
+#    Multiclass.Enable
+#        Description: Master switch for the multiclass engine (class-as-set). When disabled the
+#                     worldserver behaves exactly like stock single-class AzerothCore; when enabled,
+#                     a character's active off-classes are fully real (spells, stats, skills, quests).
+#        Default:     0 - (disabled)
+#                     1 - (enabled)
+
+Multiclass.Enable = 0
+
+#
 #    Multiclass.MaxActiveClasses
 #        Description: Maximum number of classes a character may have ACTIVE at once. Set per
 #                     worldserver, so different realms in one list can run different values.

@@ -5,7 +5,7 @@ CREATE TABLE `character_multiclass_slot` (
     `classId` TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '0 = empty',
     `unlocked` TINYINT UNSIGNED NOT NULL DEFAULT 0,
     PRIMARY KEY (`guid`, `slot`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='mod-multiclass: active class slots per character';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='multiclass: active class slots per character';
 
 DROP TABLE IF EXISTS `character_multiclass_class`;
 CREATE TABLE `character_multiclass_class` (
@@ -14,4 +14,4 @@ CREATE TABLE `character_multiclass_class` (
     `level` TINYINT UNSIGNED NOT NULL DEFAULT 1,
     `xp` INT UNSIGNED NOT NULL DEFAULT 0,
     PRIMARY KEY (`guid`, `classId`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='mod-multiclass: per-class progression remembered across swaps';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='multiclass: per-class progression remembered across swaps';

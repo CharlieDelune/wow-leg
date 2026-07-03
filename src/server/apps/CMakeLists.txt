@@ -203,6 +203,22 @@ endif()
     install(TARGETS ${APP_PROJECT_NAME} DESTINATION "${CMAKE_INSTALL_PREFIX}")
   endif()
 
+  # ARAC / multiclass DBC overrides -> the dbc/ the worldserver actually reads (always deployed,
+  # overwriting the prior copies each build). Default target is the in-tree bin/dbc (stock
+  # DataDir="." layout). When the server reads from an external DataDir -- set via the AC_DATA_DIR
+  # env override, e.g. a shared client-data dir kept outside the disposable install/ -- deploy
+  # straight into that dir's dbc/ so the overrides overlay the vanilla DBCs the runtime loads.
+  if (${APP_PROJECT_NAME} MATCHES "worldserver")
+    if (DEFINED ENV{AC_DATA_DIR})
+      set(MULTICLASS_DBC_DEST "$ENV{AC_DATA_DIR}/dbc")
+    else()
+      set(MULTICLASS_DBC_DEST "${CMAKE_INSTALL_PREFIX}/bin/dbc")
+    endif()
+    install(DIRECTORY "${CMAKE_SOURCE_DIR}/data/dbc/"
+            DESTINATION "${MULTICLASS_DBC_DEST}"
+            FILES_MATCHING PATTERN "*.dbc")
+  endif()
+
   set(PATH_TO_PCH ${SOURCE_APP_PATH}/PrecompiledHeaders/${APPLICATION_NAME}PCH.h)
 
   # Generate precompiled header

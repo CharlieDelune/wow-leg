@@ -30,6 +30,7 @@
 #include "InstanceSaveMgr.h"
 #include "Item.h"
 #include "MapReference.h"
+#include "MulticlassEngine.h"
 #include "MulticlassProfile.h"
 #include "ObjectMgr.h"
 #include "Optional.h"
@@ -2628,10 +2629,24 @@ public:
     void SetChampioningFaction(uint32 faction) { m_ChampioningFaction = faction; }
     [[nodiscard]] MulticlassProfile& GetMulticlassProfile() { return m_multiclassProfile; }
     [[nodiscard]] MulticlassProfile const& GetMulticlassProfile() const { return m_multiclassProfile; }
+    // Per-character spell ledger (active classId -> banked/learned spellIds), a plain Player member so
+    // it is born and destroyed with the character -- no global map, no login/logout lifecycle.
+    [[nodiscard]] Multiclass::Ledger& GetMulticlassLedger() { return m_multiclassLedger; }
+    [[nodiscard]] Multiclass::Ledger const& GetMulticlassLedger() const { return m_multiclassLedger; }
+    // Re-entrancy guard: set while the engine performs its own spell grants/removes so the learn/forget
+    // attribution does not capture them. Per-character (not a global) so concurrent swaps on different
+    // map threads cannot suppress each other's legitimate captures.
+    void SetMulticlassInOrchestration(bool on) { m_multiclassInOrchestration = on; }
+    [[nodiscard]] bool IsMulticlassInOrchestration() const { return m_multiclassInOrchestration; }
+    // True when the multiclass engine is enabled AND this character has an active class set.
+    [[nodiscard]] bool IsMulticlassManaged() const;
     // Keep UNIT_FIELD_BYTES_0 (class byte) in sync with the profile's projection (active[0]).
     void SyncMulticlassProjection();
     // Persist just the multiclass set tables (character_multiclass_class / _slot) mid-operation.
     void SaveMulticlassProfile();
+    // Seed an already in-world character when Multiclass.Enable is turned on via `.reload config`
+    // (no relog runs the login-time _LoadMulticlassProfile seed). Idempotent; no-op when disabled.
+    void ApplyLiveMulticlassEnable();
     Spell* m_spellModTakingSpell;
 
     float GetAverageItemLevel();
@@ -3070,6 +3085,8 @@ private:
     std::unique_ptr<PetStable> m_petStable;
 
     MulticlassProfile m_multiclassProfile;
+    Multiclass::Ledger m_multiclassLedger;
+    bool m_multiclassInOrchestration = false;
 
     // Temporary removed pet cache
     uint32 m_temporaryUnsummonedPetNumber;

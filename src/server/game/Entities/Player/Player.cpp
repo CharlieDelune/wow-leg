@@ -1328,6 +1328,12 @@ uint32 Player::getClassMask() const
     return active ? active : Unit::getClassMask();
 }
 
+bool Player::IsMulticlassManaged() const
+{
+    return sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE)
+        && !GetMulticlassProfile().GetActiveClasses().empty();
+}
+
 void Player::ToggleAFK()
 {
     ToggleFlag(PLAYER_FLAGS, PLAYER_FLAGS_AFK);
@@ -2436,6 +2442,17 @@ void Player::GiveXP(uint32 xp, Unit* victim, float group_rate, bool isLFGReward)
 
     SendLogXPGain(xp, victim, bonus_xp, recruitAFriend, group_rate);
 
+    // Multiclass: a managed character earns XP exactly like a single-class one -- the favored-zone / RaF /
+    // rested modifiers and the client XP-gain log above all apply -- but the award feeds the active classes
+    // instead of the single render class. RouteExperience distributes xp + bonus_xp across the lowest active
+    // class(es) and reconciles the native level / XP bar to mirror them, so it stands in for GiveXP's own
+    // PLAYER_XP application below.
+    if (IsMulticlassManaged())
+    {
+        Multiclass::RouteExperience(this, xp + bonus_xp);
+        return;
+    }
+
     uint32 curXP = GetUInt32Value(PLAYER_XP);
     uint32 nextLvlXP = GetUInt32Value(PLAYER_NEXT_LEVEL_XP);
     uint32 newXP = curXP + xp + bonus_xp;
@@ -3336,6 +3353,9 @@ void Player::learnSpell(uint32 spellId, bool temporary /*= false*/, bool learnFr
     {
         sScriptMgr->OnPlayerLearnSpell(this, spellId);
 
+        if (sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
+            Multiclass::AttributeLearnedSpell(this, spellId);
+
         // pussywizard: a system message "you have learnt spell X (rank Y)"
         if (IsInWorld())
             SendLearnPacket(spellId, true);
@@ -3510,6 +3530,10 @@ void Player::removeSpell(uint32 spell_id, uint8 removeSpecMask, bool onlyTempora
     if (!onlyTemporary || ((!spellInfo->HasAttribute(SpellAttr0(SPELL_ATTR0_PASSIVE | SPELL_ATTR0_DO_NOT_DISPLAY)) || !spellInfo->HasAnyAura()) && !spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL)))
     {
         sScriptMgr->OnPlayerForgotSpell(this, spell_id);
+
+        if (sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
+            Multiclass::AttributeForgotSpell(this, spell_id);
+
         SendLearnPacket(spell_id, false);
     }
 }
@@ -4246,6 +4270,21 @@ void Player::DeleteFromDB(ObjectGuid::LowType lowGuid, uint32 accountId, bool up
                 trans->Append(stmt);
 
                 stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_SETTINGS);
+                stmt->SetData(0, lowGuid);
+                trans->Append(stmt);
+
+                // Multiclass class-set + spell ledger. Unconditional -- NOT gated on Multiclass.Enable:
+                // a character deleted while the feature is off must still be purged, or a recycled guid
+                // inherits its classes/spells when the feature is next enabled.
+                stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_MULTICLASS_CLASS);
+                stmt->SetData(0, lowGuid);
+                trans->Append(stmt);
+
+                stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_MULTICLASS_SLOT);
+                stmt->SetData(0, lowGuid);
+                trans->Append(stmt);
+
+                stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_MULTICLASS_SPELL);
                 stmt->SetData(0, lowGuid);
                 trans->Append(stmt);
 

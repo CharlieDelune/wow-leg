@@ -17,109 +17,11 @@
 
 #include "Chat.h"
 #include "CommandScript.h"
-#include "Config.h"
-#include "Log.h"
-#include "MulticlassState.h"
+#include "MulticlassEngine.h"
 #include "Player.h"
-#include "PlayerScript.h"
+#include "World.h"
 
 using namespace Acore::ChatCommands;
-
-class multiclass_playerscript : public PlayerScript
-{
-public:
-    multiclass_playerscript() : PlayerScript("multiclass_playerscript",
-        { PLAYERHOOK_ON_LOAD_FROM_DB, PLAYERHOOK_ON_LOGIN, PLAYERHOOK_ON_LOGOUT, PLAYERHOOK_ON_SAVE,
-          PLAYERHOOK_ON_LEARN_SPELL, PLAYERHOOK_ON_FORGOT_SPELL,
-          PLAYERHOOK_ON_GIVE_EXP }) { }
-
-    void OnPlayerLoadFromDB(Player* player) override
-    {
-        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
-            return;
-
-        // The class SET is loaded by core (Player::_LoadMulticlassProfile) just before this hook fires,
-        // so getClassMask() already reflects the active off-classes when the core validates
-        // skills/spells (their skill lines and spells survive). Here we load only the per-class spell
-        // ledger for the active classes. OnPlayerLogin reloads to a clean final state.
-        Multiclass::LoadLedger(player);
-    }
-
-    void OnPlayerLogin(Player* player) override
-    {
-        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
-            return;
-
-        Multiclass::LoadLedger(player);
-        Multiclass::BackfillActiveLedgers(player);
-        Multiclass::ReconcileDisplayLevel(player);
-        LOG_INFO("module.multiclass", "mod-multiclass loaded for player {}", player->GetGUID().ToString());
-    }
-
-    void OnPlayerLearnSpell(Player* player, uint32 spellID) override
-    {
-        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
-            return;
-
-        Multiclass::AttributeLearnedSpell(player, spellID);
-    }
-
-    void OnPlayerForgotSpell(Player* player, uint32 spellID) override
-    {
-        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
-            return;
-
-        Multiclass::AttributeForgotSpell(player, spellID);
-    }
-
-    void OnPlayerGiveXP(Player* player, uint32& amount, Unit* victim, uint8 xpSource) override
-    {
-        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
-            return;
-        if (amount == 0)
-            return;
-        // Only take over XP for a player we actually manage; never zero an unmanaged
-        // player's XP.
-        if (!Multiclass::FindLedger(player->GetGUID()))
-            return;
-
-        // This hook fires at the XP source, BEFORE native GiveXP's own eligibility guards
-        // (Player.cpp). Replicate the two reachable ones and, on either, return WITHOUT
-        // zeroing amount: native GiveXP then re-applies the same guard and also grants
-        // nothing, so classes and character stay in exact lockstep (no XP either place).
-        // Mirror native's death guard exactly (Player.cpp): dead players get no XP EXCEPT
-        // LFG-dungeon completion rewards (native's isLFGReward == xpSource XPSOURCE_QUEST_DF),
-        // which we still route to the classes rather than let native grant to the render char.
-        if (!player->IsAlive() && !player->GetBattlegroundId() && xpSource != PlayerXPSource::XPSOURCE_QUEST_DF)
-            return;
-        if (player->HasPlayerFlag(PLAYER_FLAGS_NO_XP_GAIN))
-            return;
-
-        uint32 const base = amount;
-        // Mirror native: rested applies only on kills (victim != nullptr). GetXPRestBonus
-        // both computes the bonus AND drains the rested pool, exactly once per award.
-        uint32 const bonus = victim ? player->GetXPRestBonus(base) : 0;
-        Multiclass::RouteExperience(player, base + bonus);
-
-        amount = 0;   // suppress the native single-class XP path; the module owns all XP
-    }
-
-    void OnPlayerSave(Player* player) override
-    {
-        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
-            return;
-
-        Multiclass::SaveLedger(player);
-    }
-
-    void OnPlayerLogout(Player* player) override
-    {
-        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
-            return;
-
-        Multiclass::UnloadLedger(player);
-    }
-};
 
 class multiclass_commandscript : public CommandScript
 {
@@ -150,9 +52,9 @@ public:
         if (!player)
             return false;
 
-        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+        if (!sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
         {
-            handler->SendErrorMessage("The multiclass module is disabled.");
+            handler->SendErrorMessage("Multiclass is disabled.");
             return true;
         }
 
@@ -183,9 +85,9 @@ public:
         if (!player)
             return false;
 
-        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+        if (!sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
         {
-            handler->SendErrorMessage("The multiclass module is disabled.");
+            handler->SendErrorMessage("Multiclass is disabled.");
             return true;
         }
 
@@ -223,9 +125,9 @@ public:
         if (!player)
             return false;
 
-        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+        if (!sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
         {
-            handler->SendErrorMessage("The multiclass module is disabled.");
+            handler->SendErrorMessage("Multiclass is disabled.");
             return true;
         }
 
@@ -257,9 +159,9 @@ public:
         if (!player)
             return false;
 
-        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", false))
+        if (!sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
         {
-            handler->SendErrorMessage("The multiclass module is disabled.");
+            handler->SendErrorMessage("Multiclass is disabled.");
             return true;
         }
 
@@ -276,8 +178,7 @@ public:
     }
 };
 
-void Addmod_multiclassScripts()
+void AddSC_multiclass_commandscript()
 {
-    new multiclass_playerscript();
     new multiclass_commandscript();
 }

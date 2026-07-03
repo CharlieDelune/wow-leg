@@ -707,5 +707,6 @@ void WorldConfig::BuildConfigCache()
     SetConfigValue<bool>(CONFIG_ACHIEVEMENT_REALM_FIRST_RACE_LIMIT_ONE_PER_CHARACTER, "Achievement.RealmFirstRaceLimitOnePerCharacter", true);
 
     // Multiclass
+    SetConfigValue<bool>(CONFIG_MULTICLASS_ENABLE, "Multiclass.Enable", false);
     SetConfigValue<uint32>(CONFIG_MULTICLASS_MAX_ACTIVE_CLASSES, "Multiclass.MaxActiveClasses", 3);
 }

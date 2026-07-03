@@ -627,6 +627,10 @@ void CharacterDatabaseConnection::DoPrepareStatements()
     PrepareStatement(CHAR_REP_CHAR_SETTINGS, "REPLACE INTO character_settings (guid, source, data) VALUES (?, ?, ?)", CONNECTION_ASYNC);
     PrepareStatement(CHAR_DEL_CHAR_SETTINGS, "DELETE FROM character_settings WHERE guid = ?", CONNECTION_ASYNC);
 
+    PrepareStatement(CHAR_DEL_CHAR_MULTICLASS_CLASS, "DELETE FROM character_multiclass_class WHERE guid = ?", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_DEL_CHAR_MULTICLASS_SLOT, "DELETE FROM character_multiclass_slot WHERE guid = ?", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_DEL_CHAR_MULTICLASS_SPELL, "DELETE FROM character_multiclass_spell WHERE guid = ?", CONNECTION_ASYNC);
+
     // Instance saved data. Stores the states of gameobjects in instances to be loaded on server start
     PrepareStatement(CHAR_SELECT_INSTANCE_SAVED_DATA, "SELECT guid, state FROM instance_saved_go_state_data WHERE id = ?", CONNECTION_SYNCH);
     PrepareStatement(CHAR_INSERT_INSTANCE_SAVED_DATA, "INSERT INTO instance_saved_go_state_data (id, guid, state) VALUES (?, ?, ?)"

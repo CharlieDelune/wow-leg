@@ -1113,6 +1113,13 @@ void WorldSession::HandlePlayerLoginFromDB(LoginQueryHolder const& holder)
 
     sScriptMgr->OnPlayerLogin(pCurrChar);
 
+    if (sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
+    {
+        Multiclass::LoadLedger(pCurrChar);
+        Multiclass::BackfillActiveLedgers(pCurrChar);
+        Multiclass::ReconcileDisplayLevel(pCurrChar);
+    }
+
     if (pCurrChar->HasAtLoginFlag(AT_LOGIN_FIRST))
     {
         pCurrChar->RemoveAtLoginFlag(AT_LOGIN_FIRST);

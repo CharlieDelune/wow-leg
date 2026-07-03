@@ -34,7 +34,7 @@ namespace Multiclass
 
     // Grant `classId`'s default skill lines onto the player (idempotent) so the client recognises the
     // class's abilities — including at trainers, which the 3.3.5 client groups by skill line. Must be
-    // called under the module's orchestration guard: SetSkill auto-learns a skill line's general spells.
+    // called under the engine's per-player orchestration guard: SetSkill auto-learns a skill line's general spells.
     void GrantClassSkills(Player* player, uint8 classId);
 
     // OR of every SkillLineAbility ClassMask entry for the spell; 0 if it has no
