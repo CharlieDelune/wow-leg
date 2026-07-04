@@ -25,6 +25,15 @@
 #include <vector>
 #include "Define.h"
 
+// Governs how per-active-class stat values are reduced into the single value a multiclass character
+// carries (bound to Multiclass.CombinedStats -> CONFIG_MULTICLASS_COMBINED_STATS). File scope so
+// WorldConfig.cpp, Player.h and StatSystem.cpp all see it without pulling in Player.
+enum MulticlassCombinedStats : uint32
+{
+    MULTICLASS_STATS_HIGHEST = 0,   // per-stat max across active classes (bounded, no-inflation default)
+    MULTICLASS_STATS_SUM     = 1    // additive across active classes (the OP sandbox)
+};
+
 namespace Multiclass
 {
     constexpr uint8 MAX_CLASS_SLOTS = 3;
@@ -222,6 +231,29 @@ namespace Multiclass
                 if (owned == spellId)
                     return true;
         return false;
+    }
+
+    // Reduce per-active-class stat values into the single coherent value the character carries, per
+    // Multiclass.CombinedStats: MULTICLASS_STATS_SUM -> additive, otherwise (HIGHEST, the default) ->
+    // std::max. Empty input yields the neutral 0.0f; a single element returns that element unchanged
+    // under BOTH modes -- the byte-vanilla single-class invariant lives here.
+    inline float CombineValues(uint32 mode, std::vector<float> const& perClassValues)
+    {
+        if (perClassValues.empty())
+            return 0.0f;
+
+        if (mode == MULTICLASS_STATS_SUM)
+        {
+            float sum = 0.0f;
+            for (float value : perClassValues)
+                sum += value;
+            return sum;
+        }
+
+        float best = perClassValues.front();
+        for (float value : perClassValues)
+            best = std::max(best, value);
+        return best;
     }
 }
 

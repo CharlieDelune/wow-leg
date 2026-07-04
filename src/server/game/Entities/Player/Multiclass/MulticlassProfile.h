@@ -78,8 +78,21 @@ public:
         return true;
     }
 
-    // ---- active set ----
+    // ---- active set (positional slots) ----
+    // Slots are stable numbered positions: `_slots[i]` is the class in slot i (0 == empty), and clearing a
+    // slot never shifts the others. `_active` is a derived cache -- the non-empty classIds in slot order --
+    // rebuilt on every slot mutation, so consumers that just want "the set of active classes" (the stat
+    // combine, the masks, the projection) keep reading a compact list at zero per-call cost. The projected
+    // class is the lowest-numbered filled slot (`_active.front()`).
     [[nodiscard]] std::vector<uint8> const& GetActiveClasses() const { return _active; }
+
+    // The positional view: index == slot, value == classId (0 == empty). May hold interior/trailing holes.
+    [[nodiscard]] std::vector<uint8> const& GetSlots() const { return _slots; }
+
+    [[nodiscard]] uint8 GetClassAtSlot(uint8 index) const
+    {
+        return std::size_t(index) < _slots.size() ? _slots[index] : uint8(0);
+    }
 
     [[nodiscard]] uint8 GetProjectedClass() const { return _active.empty() ? uint8(0) : _active.front(); }
 
@@ -91,58 +104,73 @@ public:
     [[nodiscard]] uint32 GetActiveClassMask() const
     {
         uint32 mask = 0;
-        for (uint8 classId : _active)
-            if (classId != 0)
-                mask |= 1u << (classId - 1);
+        for (uint8 classId : _active)          // the cache holds only non-zero classIds
+            mask |= 1u << (classId - 1);
         return mask;
     }
 
-    bool Activate(uint8 classId)
+    // Put an owned class into slot `index` (valid range 0.._maxActive-1), replacing whatever occupied it.
+    // Lower slots may stay empty — positions are stable, never compacted. Rejects an out-of-range slot, an
+    // invalid/unowned class, or a class already active in a DIFFERENT slot. A displaced class stays owned.
+    bool SetSlot(uint8 index, uint8 newClassId)
     {
-        if (!HasOwnedClass(classId) || HasActiveClass(classId) || _active.size() >= _maxActive)
-            return false;
-        _active.push_back(classId);
-        return true;
-    }
-
-    bool Deactivate(uint8 classId)
-    {
-        if (_active.size() <= 1)
-            return false;
-        auto itr = std::find(_active.begin(), _active.end(), classId);
-        if (itr == _active.end())
-            return false;
-        _active.erase(itr);
-        return true;
-    }
-
-    // Replace the class occupying active position `index` with `newClassId` (which must already be
-    // owned). Atomic — the active set is never transiently emptied, so this is the safe way to swap
-    // the last active class. The displaced class remains owned (benched). Rejects out-of-range index,
-    // invalid/unowned newClassId, and a newClassId already active at a different position.
-    bool ReplaceActiveAt(uint8 index, uint8 newClassId)
-    {
-        if (index >= _active.size())
+        if (index >= _maxActive)
             return false;
         if (!IsValidClassId(newClassId) || !HasOwnedClass(newClassId))
             return false;
-        for (std::size_t i = 0; i < _active.size(); ++i)
-            if (i != index && _active[i] == newClassId)
+        for (std::size_t i = 0; i < _slots.size(); ++i)
+            if (i != std::size_t(index) && _slots[i] == newClassId)
                 return false;
-        _active[index] = newClassId;
+        if (std::size_t(index) >= _slots.size())
+            _slots.resize(std::size_t(index) + 1, uint8(0));
+        _slots[index] = newClassId;
+        RebuildActiveCache();
         return true;
     }
 
-    // Reset and repopulate from persisted data. `pool` is every owned class; `activeOrder` is the
-    // active classIds in slot order (each must appear in `pool`). Honors the current cap.
-    void Load(std::vector<ClassProgress> const& pool, std::vector<uint8> const& activeOrder)
+    // Empty slot `index`; the class there stays owned (benched). Positions do not shift. Refuses to clear
+    // the last filled slot — a managed character must always keep at least one active class, since the
+    // projection reads the slot-order front.
+    bool ClearSlot(uint8 index)
+    {
+        if (std::size_t(index) >= _slots.size() || _slots[index] == 0)
+            return false;
+        if (_active.size() <= 1)
+            return false;
+        _slots[index] = 0;
+        RebuildActiveCache();
+        return true;
+    }
+
+    // Reset and repopulate from persisted data. `pool` is every owned class; `positionalSlots[i]` is the
+    // classId in slot i (0 == empty), exactly as stored — interior holes are preserved. Each non-empty
+    // entry must be owned; entries at or beyond the current cap, and duplicates, are dropped (benched).
+    void Load(std::vector<ClassProgress> const& pool, std::vector<uint8> const& positionalSlots)
     {
         _pool.clear();
+        _slots.clear();
         _active.clear();
         for (ClassProgress const& cp : pool)
             AddOwnedClass(cp.classId, cp.level, cp.xp);
-        for (uint8 classId : activeOrder)
-            Activate(classId);
+        for (std::size_t i = 0; i < positionalSlots.size() && i < _maxActive; ++i)
+        {
+            uint8 const classId = positionalSlots[i];
+            if (classId == 0 || !HasOwnedClass(classId))
+                continue;
+            bool duplicate = false;
+            for (uint8 placed : _slots)
+                if (placed == classId)
+                {
+                    duplicate = true;
+                    break;
+                }
+            if (duplicate)
+                continue;
+            if (i >= _slots.size())
+                _slots.resize(i + 1, uint8(0));
+            _slots[i] = classId;
+        }
+        RebuildActiveCache();
     }
 
     [[nodiscard]] uint32 GetOwnedClassMask() const
@@ -189,6 +217,16 @@ public:
     void SetMaxActiveClasses(uint8 maxActive) { _maxActive = maxActive < 1 ? uint8(1) : maxActive; }
 
 private:
+    // Rebuild the derived compact cache (non-empty classIds in slot order) from the positional slots.
+    // Called after every slot mutation so GetActiveClasses()/GetProjectedClass() stay a zero-cost read.
+    void RebuildActiveCache()
+    {
+        _active.clear();
+        for (uint8 classId : _slots)
+            if (classId != 0)
+                _active.push_back(classId);
+    }
+
     [[nodiscard]] ClassProgress const* FindOwned(uint8 classId) const
     {
         for (ClassProgress const& cp : _pool)
@@ -206,7 +244,8 @@ private:
     }
 
     std::vector<ClassProgress> _pool;    // every owned class (active or benched)
-    std::vector<uint8> _active;          // ordered active classIds; front() is the projection
+    std::vector<uint8> _slots;           // positional: _slots[i] = class in slot i, 0 = empty; holes allowed
+    std::vector<uint8> _active;          // derived cache: non-empty classIds in slot order; front() = projection
     uint8 _maxActive = 3;                // active-set cap; injected from per-world config (P1b), 3 = fallback only
 };
 

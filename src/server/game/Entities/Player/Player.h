@@ -1336,6 +1336,7 @@ public:
     void AutoUnequipOffhandIfNeed(bool force = false);
     void MoveUnusableEquippedItemsToInventory();
     void PruneSkillsInvalidForActiveClasses();
+    void PruneSpellsInvalidForActiveClasses();
     bool StoreNewItemInBestSlots(uint32 item_id, uint32 item_count);
     void AutoStoreLoot(uint8 bag, uint8 slot, uint32 loot_id, LootStore const& store, bool broadcast = false);
     void AutoStoreLoot(uint32 loot_id, LootStore const& store, bool broadcast = false) { AutoStoreLoot(NULL_BAG, NULL_SLOT, loot_id, store, broadcast); }
@@ -1750,6 +1751,7 @@ public:
     bool _addSpell(uint32 spellId, uint8 addSpecMask, bool temporary, bool learnFromSkill = false);
     void learnSpell(uint32 spellId, bool temporary = false, bool learnFromSkill = false);
     void removeSpell(uint32 spellId, uint8 removeSpecMask, bool onlyTemporary);
+    void RemoveSpellAndPurgeRow(uint32 spellId);
     void resetSpells();
     void LearnCustomSpells();
     void LearnDefaultSkills();
@@ -1758,6 +1760,7 @@ public:
     void learnQuestRewardedSpells(Quest const* quest);
     void learnSpellHighRank(uint32 spellid);
     bool CheckSkillLearnedBySpell(uint32 spellId);
+    bool IsSkillLearnedBySpellValid(uint32 spellId, uint32& outErrorSkill);
     void SetReputation(uint32 factionentry, float value);
     [[nodiscard]] uint32 GetReputation(uint32 factionentry) const;
     std::string const& GetGuildName();
@@ -2007,6 +2010,10 @@ public:
     void ApplySpellHealingBonus(int32 amount, bool apply);
     void UpdateSpellDamageAndHealingBonus();
     void ApplyRatingMod(CombatRating cr, int32 value, bool apply);
+    // Re-apply the three CR_HASTE_* rating time-mods with the freshly combined per-class multiplier,
+    // used after a live class swap / config reload changes the active set with no rating delta.
+    // No-op-equivalent for a single-class / disabled character (combined mult == getClass() mult).
+    void ReapplyHasteRatingMods();
     void UpdateRating(CombatRating cr);
     void UpdateAllRatings();
 
@@ -2014,14 +2021,21 @@ public:
 
     void UpdateDefenseBonusesMod();
     inline void RecalculateRating(CombatRating cr) { ApplyRatingMod(cr, 0, true);}
-    float GetMeleeCritFromAgility();
-    void GetDodgeFromAgility(float& diminishing, float& nondiminishing);
+    float GetMeleeCritFromAgility(uint8 pclass);
+    void GetDodgeFromAgility(uint8 pclass, float& diminishing, float& nondiminishing);
     [[nodiscard]] float GetMissPercentageFromDefence() const;
-    float GetSpellCritFromIntellect();
-    float OCTRegenHPPerSpirit();
-    float OCTRegenMPPerSpirit();
+    float GetSpellCritFromIntellect(uint8 pclass);
+    float OCTRegenHPPerSpirit(uint8 pclass);
+    float OCTRegenMPPerSpirit(uint8 pclass);
+    float CalculateFeralAttackPower();   // druid melee AP (feral forms + Predatory Strikes), extracted from UpdateAttackPowerAndDamage
     [[nodiscard]] float GetRatingMultiplier(CombatRating cr) const;
     [[nodiscard]] float GetRatingBonusValue(CombatRating cr) const;
+    // Per-class variants of the rating→stat conversion: the class scalar (GtOCTClassCombatRatingScalar)
+    // is looked up with `classId` instead of the hard-wired getClass(). GetRatingMultiplier /
+    // GetRatingBonusValue delegate to these with getClass(), so every existing caller is byte-identical;
+    // multiclass consumers combine these over the active set via CombineActive.
+    [[nodiscard]] float GetRatingMultiplierForClass(CombatRating cr, uint8 classId) const;
+    [[nodiscard]] float GetRatingBonusValueForClass(CombatRating cr, uint8 classId) const;
     uint32 GetBaseSpellPowerBonus() { return m_baseSpellPower; }
     uint32 GetBaseSpellDamageBonus() { return m_baseSpellDamage; }
     uint32 GetBaseSpellHealingBonus() { return m_baseSpellHealing; }
@@ -2640,13 +2654,42 @@ public:
     [[nodiscard]] bool IsMulticlassInOrchestration() const { return m_multiclassInOrchestration; }
     // True when the multiclass engine is enabled AND this character has an active class set.
     [[nodiscard]] bool IsMulticlassManaged() const;
+    // Reduce a per-class stat term over the active class set per Multiclass.CombinedStats. `perClass`
+    // is any callable float(uint8 classId): it is the EXISTING single-class formula, parameterised on
+    // the classId to evaluate instead of the hard-wired getClass(). When multiclass is unmanaged
+    // (feature off, or no active class) the term is evaluated once for getClass(), so a normal
+    // character's stats are byte-identical to vanilla.
+    template <class F>
+    [[nodiscard]] float CombineActive(F&& perClass) const
+    {
+        if (!IsMulticlassManaged())
+            return perClass(getClass());
+
+        std::vector<uint8> const& active = GetMulticlassProfile().GetActiveClasses();
+        if (active.empty())   // IsMulticlassManaged() already guarantees non-empty; stay defensive
+            return perClass(getClass());
+
+        std::vector<float> values;
+        values.reserve(active.size());
+        for (uint8 classId : active)
+            values.push_back(perClass(classId));
+
+        return Multiclass::CombineValues(GetMulticlassCombineMode(), values);
+    }
     // Keep UNIT_FIELD_BYTES_0 (class byte) in sync with the profile's projection (active[0]).
     void SyncMulticlassProjection();
     // Persist just the multiclass set tables (character_multiclass_class / _slot) mid-operation.
     void SaveMulticlassProfile();
+    // Combine the base attribute pool (per-Stat) and base HP/mana across the active class set at
+    // `level`, via CombineActive (single evaluation of getClass() when unmanaged -> byte-vanilla).
+    // Shared by InitStatsForLevel and GiveLevel so both sites read one combined pool.
+    void CombineBaseStatPool(uint8 level, uint32 (&outStats)[MAX_STATS], uint32& outHealth, uint32& outMana) const;
     // Seed an already in-world character when Multiclass.Enable is turned on via `.reload config`
     // (no relog runs the login-time _LoadMulticlassProfile seed). Idempotent; no-op when disabled.
     void ApplyLiveMulticlassEnable();
+    // Recompute the whole combined stat sheet in place (base pool + derived) WITHOUT the level-up heal:
+    // used by live class-set changes and config reloads. Distinct from GiveLevel, which fully heals.
+    void RecalculateMulticlassStats();
     Spell* m_spellModTakingSpell;
 
     float GetAverageItemLevel();
@@ -2929,6 +2972,11 @@ protected:
     float m_auraBaseFlatMod[BASEMOD_END];
     float m_auraBasePctMod[BASEMOD_END];
     int32 m_baseRatingValue[MAX_COMBAT_RATING];
+    // Exact attack/cast-time percent-mod last pushed for each CR_HASTE_* rating (melee/ranged/spell).
+    // ApplyPercentModFloatVar is multiplicative, so re-basing haste when the combined per-class
+    // multiplier changes (class swap / config reload) requires removing precisely this prior value.
+    // Transient runtime state -- haste is rebuilt from ratings on load, never persisted.
+    float m_hasteRatingAppliedMod[3];
     uint32 m_baseSpellPower;
     uint32 m_baseSpellDamage;
     uint32 m_baseSpellHealing;
@@ -3087,6 +3135,9 @@ private:
     MulticlassProfile m_multiclassProfile;
     Multiclass::Ledger m_multiclassLedger;
     bool m_multiclassInOrchestration = false;
+    // Reads CONFIG_MULTICLASS_COMBINED_STATS. Defined in Player.cpp so the CombineActive template can
+    // stay header-inline without dragging World.h into Player.h.
+    [[nodiscard]] uint32 GetMulticlassCombineMode() const;
 
     // Temporary removed pet cache
     uint32 m_temporaryUnsummonedPetNumber;

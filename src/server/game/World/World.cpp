@@ -186,8 +186,10 @@ void World::LoadConfigSettings(bool reload)
     if (!reload)
         sWorldSessionMgr->SetPlayerAmountLimit(sConfigMgr->GetOption<int32>("PlayerLimit", 1000));
 
-    // Capture the pre-reload master switch so we can detect Multiclass.Enable flipping on live (below).
+    // Capture the pre-reload master switch and combine mode so we can detect Multiclass.Enable flipping
+    // or Multiclass.CombinedStats changing on a live `.reload config` (below).
     bool const multiclassWasEnabled = reload && getBoolConfig(CONFIG_MULTICLASS_ENABLE);
+    uint32 const multiclassPrevCombinedStats = reload ? getIntConfig(CONFIG_MULTICLASS_COMBINED_STATS) : 0u;
 
     _worldConfig.Initialize(reload);
 
@@ -198,6 +200,21 @@ void World::LoadConfigSettings(bool reload)
         for (auto const& itr : sWorldSessionMgr->GetAllSessions())
             if (Player* player = itr.second->GetPlayer())
                 player->ApplyLiveMulticlassEnable();
+
+    // Recompute combined stats live for the whole online population whenever the multiclass stat surface
+    // changes: Enable flipped either way (on: after the seed above -> managed -> combined stats; off:
+    // CombineActive falls back to getClass() -> vanilla stats restored), or CombinedStats mode changed
+    // (highest <-> sum). RecalculateMulticlassStats preserves vitals and is a no-op-equivalent for a
+    // never-multiclassed character, so a blanket sweep is safe.
+    if (reload)
+    {
+        bool const enableFlipped = multiclassWasEnabled != getBoolConfig(CONFIG_MULTICLASS_ENABLE);
+        bool const modeChanged = multiclassPrevCombinedStats != getIntConfig(CONFIG_MULTICLASS_COMBINED_STATS);
+        if (enableFlipped || modeChanged)
+            for (auto const& itr : sWorldSessionMgr->GetAllSessions())
+                if (Player* player = itr.second->GetPlayer())
+                    player->RecalculateMulticlassStats();
+    }
 
     for (uint8 i = 0; i < MAX_MOVE_TYPE; ++i)
         playerBaseMoveSpeed[i] = baseMoveSpeed[i] * getRate(RATE_MOVESPEED_PLAYER);

@@ -33,7 +33,8 @@ public:
         static ChatCommandTable mcTable =
         {
             { "info",        HandleInfo,        SEC_PLAYER,     Console::No },
-            { "setclass",    HandleSetClass,    SEC_GAMEMASTER, Console::No },
+            { "setslot",     HandleSetSlot,     SEC_GAMEMASTER, Console::No },
+            { "unsetslot",   HandleUnsetSlot,   SEC_GAMEMASTER, Console::No },
             { "setlevel",    HandleSetLevel,    SEC_GAMEMASTER, Console::No },
             { "unlockclass", HandleUnlockClass, SEC_GAMEMASTER, Console::No }
         };
@@ -59,15 +60,18 @@ public:
         }
 
         MulticlassProfile const& mc = player->GetMulticlassProfile();
-        std::vector<uint8> const active = mc.GetActiveClasses();
         handler->PSendSysMessage("Multiclass (projected class {}, display level {}, max active {}):",
             mc.GetProjectedClass(), player->GetLevel(), mc.GetMaxActiveClasses());
 
-        for (std::size_t slot = 0; slot < active.size(); ++slot)
+        // Positional slots: show every position up to the cap so empty (unset) slots are visible as holes.
+        for (uint8 slot = 0; slot < mc.GetMaxActiveClasses(); ++slot)
         {
-            uint8 const classId = active[slot];
-            handler->PSendSysMessage("  slot {}: class {} level {} xp {}",
-                uint32(slot), classId, mc.GetClassLevel(classId), mc.GetClassXp(classId));
+            uint8 const classId = mc.GetClassAtSlot(slot);
+            if (classId == 0)
+                handler->PSendSysMessage("  slot {}: (empty)", uint32(slot));
+            else
+                handler->PSendSysMessage("  slot {}: class {} level {} xp {}",
+                    uint32(slot), uint32(classId), mc.GetClassLevel(classId), mc.GetClassXp(classId));
         }
 
         handler->PSendSysMessage("Owned pool:");
@@ -79,7 +83,7 @@ public:
         return true;
     }
 
-    static bool HandleSetClass(ChatHandler* handler, uint8 slot, uint8 classId)
+    static bool HandleSetSlot(ChatHandler* handler, uint8 slot, uint8 classId)
     {
         Player* player = handler->GetPlayer();
         if (!player)
@@ -92,30 +96,64 @@ public:
         }
 
         MulticlassProfile& mc = player->GetMulticlassProfile();
-        std::vector<uint8> const active = mc.GetActiveClasses();
 
         if (!MulticlassProfile::IsValidClassId(classId))
         {
             handler->SendErrorMessage("Invalid class id (1-11, excluding 10).");
             return true;
         }
-        // Slot may target an existing active slot (replace) or the next free one (append), within the cap.
-        if (slot >= mc.GetMaxActiveClasses() || std::size_t(slot) > active.size())
+        // Any position within the cap is settable — fill an empty slot or replace an occupied one. Positions
+        // are stable, so setting slot N never disturbs the others.
+        if (slot >= mc.GetMaxActiveClasses())
         {
-            handler->SendErrorMessage("Invalid slot: use 0..{} (next free slot is {}).",
-                mc.GetMaxActiveClasses() - 1, active.size());
+            handler->SendErrorMessage("Invalid slot: use 0..{}.", mc.GetMaxActiveClasses() - 1);
             return true;
         }
         // Reject a class already active in a DIFFERENT slot (a no-op self-set on this slot is fine).
-        for (std::size_t s = 0; s < active.size(); ++s)
-            if (active[s] == classId && s != std::size_t(slot))
+        std::vector<uint8> const& slots = mc.GetSlots();
+        for (std::size_t s = 0; s < slots.size(); ++s)
+            if (slots[s] == classId && s != std::size_t(slot))
             {
-                handler->SendErrorMessage("Class {} is already active in slot {}.", classId, uint32(s));
+                handler->SendErrorMessage("Class {} is already active in slot {}.", uint32(classId), uint32(s));
                 return true;
             }
 
         Multiclass::SwapSlotClass(player, slot, classId);
-        handler->PSendSysMessage("Slot {} set to class {} (level {}).", slot, classId, mc.GetClassLevel(classId));
+        handler->PSendSysMessage("Slot {} set to class {} (level {}).",
+            uint32(slot), uint32(classId), mc.GetClassLevel(classId));
+        return true;
+    }
+
+    static bool HandleUnsetSlot(ChatHandler* handler, uint8 slot)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+
+        if (!sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
+        {
+            handler->SendErrorMessage("Multiclass is disabled.");
+            return true;
+        }
+
+        MulticlassProfile& mc = player->GetMulticlassProfile();
+        uint8 const classId = mc.GetClassAtSlot(slot);
+        if (classId == 0)
+        {
+            handler->SendErrorMessage("Slot {} is empty.", uint32(slot));
+            return true;
+        }
+        // The last filled slot cannot be cleared: the projected class reads the slot-order front, so a
+        // character must keep at least one active class. Swap it for a different class with setslot instead.
+        if (mc.GetActiveClasses().size() <= 1)
+        {
+            handler->SendErrorMessage("Cannot unset the last active class; a character must keep at least one.");
+            return true;
+        }
+
+        Multiclass::UnsetSlot(player, slot);
+        handler->PSendSysMessage("Slot {} unset; class {} is now benched (still unlocked, re-slot it any time).",
+            uint32(slot), uint32(classId));
         return true;
     }
 
@@ -138,18 +176,17 @@ public:
         }
 
         MulticlassProfile& mc = player->GetMulticlassProfile();
-        std::vector<uint8> const active = mc.GetActiveClasses();
-        if (std::size_t(slot) >= active.size())
+        uint8 const classId = mc.GetClassAtSlot(slot);
+        if (classId == 0)
         {
-            handler->SendErrorMessage("Slot {} is empty.", slot);
+            handler->SendErrorMessage("Slot {} is empty.", uint32(slot));
             return true;
         }
 
-        uint8 const classId = active[slot];
         mc.SetClassProgress(classId, level, mc.GetClassXp(classId));
         player->SaveMulticlassProfile();
         Multiclass::ReconcileDisplayLevel(player);
-        handler->PSendSysMessage("Slot {} (class {}) level set to {}.", slot, classId, level);
+        handler->PSendSysMessage("Slot {} (class {}) level set to {}.", uint32(slot), uint32(classId), uint32(level));
         return true;
     }
 

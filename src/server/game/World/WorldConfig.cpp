@@ -15,6 +15,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "MulticlassLogic.h"
 #include "Player.h"
 #include "WorldConfig.h"
 
@@ -709,4 +710,5 @@ void WorldConfig::BuildConfigCache()
     // Multiclass
     SetConfigValue<bool>(CONFIG_MULTICLASS_ENABLE, "Multiclass.Enable", false);
     SetConfigValue<uint32>(CONFIG_MULTICLASS_MAX_ACTIVE_CLASSES, "Multiclass.MaxActiveClasses", 3);
+    SetConfigValue<uint32>(CONFIG_MULTICLASS_COMBINED_STATS, "Multiclass.CombinedStats", MULTICLASS_STATS_HIGHEST);
 }

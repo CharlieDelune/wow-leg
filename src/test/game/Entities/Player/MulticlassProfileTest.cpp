@@ -67,103 +67,136 @@ TEST(MulticlassProfile, MaxActiveClasses_defaultsToThreeAndClampsToOne)
     EXPECT_EQ(p.GetMaxActiveClasses(), 9u);
 }
 
-TEST(MulticlassProfile, Activate_requiresOwnedAndAddsToActiveSetOrdered)
+TEST(MulticlassProfile, SetSlot_requiresOwnedAndFillsPositions)
 {
     MulticlassProfile p;
     p.AddOwnedClass(1);
     p.AddOwnedClass(8);
-    EXPECT_FALSE(p.Activate(4));            // rogue not owned
-    EXPECT_TRUE(p.Activate(1));
-    EXPECT_TRUE(p.Activate(8));
-    EXPECT_FALSE(p.Activate(1));            // already active
+    EXPECT_FALSE(p.SetSlot(0, 4));          // rogue not owned
+    EXPECT_TRUE(p.SetSlot(0, 1));
+    EXPECT_TRUE(p.SetSlot(1, 8));
     EXPECT_EQ(p.GetActiveClasses(), (std::vector<uint8>{ 1, 8 }));
+    EXPECT_EQ(p.GetClassAtSlot(0), 1u);
+    EXPECT_EQ(p.GetClassAtSlot(1), 8u);
     EXPECT_TRUE(p.HasActiveClass(8));
     EXPECT_FALSE(p.HasActiveClass(11));
 }
 
-TEST(MulticlassProfile, GetProjectedClass_isFirstActiveOrZeroWhenNone)
+TEST(MulticlassProfile, GetProjectedClass_isFirstFilledSlotOrZeroWhenNone)
 {
     MulticlassProfile p;
-    EXPECT_EQ(p.GetProjectedClass(), 0u);  // empty active
+    EXPECT_EQ(p.GetProjectedClass(), 0u);   // nothing active
     p.AddOwnedClass(8);
     p.AddOwnedClass(1);
-    p.Activate(8);
-    p.Activate(1);
-    EXPECT_EQ(p.GetProjectedClass(), 8u);  // first activated
+    p.SetSlot(0, 8);
+    p.SetSlot(1, 1);
+    EXPECT_EQ(p.GetProjectedClass(), 8u);   // slot-0 class
 }
 
-TEST(MulticlassProfile, GetActiveClassMask_orsActiveBitsOnly)
+TEST(MulticlassProfile, SetSlot_fillsArbitrarySlotLeavingLowerSlotsEmpty)
+{
+    MulticlassProfile p;
+    p.AddOwnedClass(8);
+    EXPECT_TRUE(p.SetSlot(2, 8));           // slot 2 filled; slots 0 and 1 stay empty
+    EXPECT_EQ(p.GetClassAtSlot(0), 0u);
+    EXPECT_EQ(p.GetClassAtSlot(1), 0u);
+    EXPECT_EQ(p.GetClassAtSlot(2), 8u);
+    EXPECT_EQ(p.GetActiveClasses(), (std::vector<uint8>{ 8 }));  // compact view skips the holes
+    EXPECT_EQ(p.GetProjectedClass(), 8u);   // projection = lowest filled slot
+}
+
+TEST(MulticlassProfile, GetActiveClassMask_orsFilledSlotBitsOnly)
 {
     MulticlassProfile p;
     p.AddOwnedClass(1);                     // Warrior -> bit 0
     p.AddOwnedClass(8);                     // Mage    -> bit 7
     p.AddOwnedClass(11);                    // Druid   -> bit 10 (owned but benched)
-    p.Activate(1);
-    p.Activate(8);
+    p.SetSlot(0, 1);
+    p.SetSlot(1, 8);
     EXPECT_EQ(p.GetActiveClassMask(), (1u << 0) | (1u << 7));  // Druid not active -> excluded
 }
 
-TEST(MulticlassProfile, Activate_enforcesMaxActiveCap)
+TEST(MulticlassProfile, SetSlot_rejectsSlotBeyondCap)
 {
     MulticlassProfile p;
     p.SetMaxActiveClasses(2);
     p.AddOwnedClass(1);
     p.AddOwnedClass(8);
     p.AddOwnedClass(11);
-    EXPECT_TRUE(p.Activate(1));
-    EXPECT_TRUE(p.Activate(8));
-    EXPECT_FALSE(p.Activate(11));          // cap reached
+    EXPECT_TRUE(p.SetSlot(0, 1));
+    EXPECT_TRUE(p.SetSlot(1, 8));
+    EXPECT_FALSE(p.SetSlot(2, 11));         // slot index >= cap
     EXPECT_EQ(p.GetActiveClasses().size(), 2u);
 }
 
-TEST(MulticlassProfile, Deactivate_removesButNeverEmptiesActive)
+TEST(MulticlassProfile, ClearSlot_emptiesPositionWithoutShiftingAndNeverEmptiesAll)
 {
     MulticlassProfile p;
     p.AddOwnedClass(1);
-    p.AddOwnedClass(8);
-    p.Activate(1);
-    p.Activate(8);
-    EXPECT_TRUE(p.Deactivate(1));
-    EXPECT_EQ(p.GetActiveClasses(), (std::vector<uint8>{ 8 }));
-    EXPECT_TRUE(p.HasOwnedClass(1));       // benched, still owned
-    EXPECT_FALSE(p.Deactivate(8));         // would empty the active set -> refused
-    EXPECT_FALSE(p.Deactivate(11));        // not active
-    EXPECT_EQ(p.GetActiveClasses(), (std::vector<uint8>{ 8 }));
+    p.AddOwnedClass(4);
+    p.SetSlot(0, 1);
+    p.SetSlot(1, 4);
+    EXPECT_TRUE(p.ClearSlot(0));            // empty slot 0; slot 1 must NOT shift down
+    EXPECT_EQ(p.GetClassAtSlot(0), 0u);     // slot 0 is now a hole
+    EXPECT_EQ(p.GetClassAtSlot(1), 4u);     // rogue stays put in slot 1
+    EXPECT_EQ(p.GetActiveClasses(), (std::vector<uint8>{ 4 }));
+    EXPECT_EQ(p.GetProjectedClass(), 4u);   // projection = lowest filled slot
+    EXPECT_TRUE(p.HasOwnedClass(1));        // benched, still owned
+    EXPECT_FALSE(p.ClearSlot(1));           // would empty the active set -> refused
+    EXPECT_FALSE(p.ClearSlot(0));           // already empty -> refused
+    EXPECT_EQ(p.GetActiveClasses(), (std::vector<uint8>{ 4 }));
 }
 
-TEST(MulticlassProfile, ReplaceActiveAt_swapsInPlaceAndKeepsOldOwned)
+TEST(MulticlassProfile, ClearSlot_thenSetSlot_doesNotClobberOtherSlots)
+{
+    // Regression: unset slot 0, then refill slot 0 -> the class in slot 1 must survive (positions are
+    // stable, so the rogue does not slide into slot 0 to be overwritten).
+    MulticlassProfile p;
+    p.AddOwnedClass(1);
+    p.AddOwnedClass(4);
+    p.AddOwnedClass(8);
+    p.SetSlot(0, 1);
+    p.SetSlot(1, 4);
+    EXPECT_TRUE(p.ClearSlot(0));
+    EXPECT_TRUE(p.SetSlot(0, 8));           // refill slot 0 with mage
+    EXPECT_EQ(p.GetClassAtSlot(0), 8u);
+    EXPECT_EQ(p.GetClassAtSlot(1), 4u);     // rogue survives
+    EXPECT_EQ(p.GetActiveClasses(), (std::vector<uint8>{ 8, 4 }));
+}
+
+TEST(MulticlassProfile, SetSlot_replacesInPlaceKeepsOldOwned)
 {
     MulticlassProfile p;
     p.AddOwnedClass(1);                     // Warrior (creation class)
     p.AddOwnedClass(4);                     // Rogue (owned, benched)
-    p.Activate(1);
-    EXPECT_TRUE(p.ReplaceActiveAt(0, 4));   // become a rogue in the only slot
+    p.SetSlot(0, 1);
+    EXPECT_TRUE(p.SetSlot(0, 4));           // become a rogue in the only slot
     EXPECT_EQ(p.GetActiveClasses(), (std::vector<uint8>{ 4 }));
     EXPECT_EQ(p.GetProjectedClass(), 4u);
     EXPECT_TRUE(p.HasOwnedClass(1));        // warrior benched, not gone
     EXPECT_FALSE(p.HasActiveClass(1));      // no privileged creation slot
 }
 
-TEST(MulticlassProfile, ReplaceActiveAt_rejectsUnownedInvalidAndOutOfRange)
+TEST(MulticlassProfile, SetSlot_rejectsUnownedInvalidAndOutOfRange)
 {
     MulticlassProfile p;
     p.AddOwnedClass(1);
-    p.Activate(1);
-    EXPECT_FALSE(p.ReplaceActiveAt(0, 8));  // mage not owned
-    EXPECT_FALSE(p.ReplaceActiveAt(0, 10)); // invalid id
-    EXPECT_FALSE(p.ReplaceActiveAt(3, 1));  // index out of range
+    p.SetSlot(0, 1);
+    EXPECT_FALSE(p.SetSlot(0, 8));          // mage not owned
+    EXPECT_FALSE(p.SetSlot(0, 10));         // invalid id
+    EXPECT_FALSE(p.SetSlot(3, 1));          // slot index >= cap (default 3)
     EXPECT_EQ(p.GetActiveClasses(), (std::vector<uint8>{ 1 }));
 }
 
-TEST(MulticlassProfile, ReplaceActiveAt_rejectsDuplicateElsewhereAllowsSelf)
+TEST(MulticlassProfile, SetSlot_rejectsDuplicateElsewhereAllowsSelf)
 {
     MulticlassProfile p;
     p.AddOwnedClass(1);
     p.AddOwnedClass(8);
-    p.Activate(1);
-    p.Activate(8);
-    EXPECT_FALSE(p.ReplaceActiveAt(0, 8));  // 8 already active at index 1 -> duplicate
-    EXPECT_TRUE(p.ReplaceActiveAt(0, 1));   // replacing index 0 with itself -> no-op, allowed
+    p.SetSlot(0, 1);
+    p.SetSlot(1, 8);
+    EXPECT_FALSE(p.SetSlot(0, 8));          // 8 already active in slot 1 -> duplicate
+    EXPECT_TRUE(p.SetSlot(0, 1));           // setting slot 0 to itself -> no-op, allowed
     EXPECT_EQ(p.GetActiveClasses(), (std::vector<uint8>{ 1, 8 }));
 }
 
@@ -187,6 +220,18 @@ TEST(MulticlassProfile, Load_respectsMaxActiveCap)
     p.Load({ { 1, 1, 0 }, { 8, 1, 0 } }, { 1, 8 });
     EXPECT_EQ(p.GetActiveClasses(), (std::vector<uint8>{ 1 }));  // second active dropped by cap
     EXPECT_TRUE(p.HasOwnedClass(8));                             // still owned, just benched
+}
+
+TEST(MulticlassProfile, Load_preservesSlotHoles)
+{
+    // A persisted empty slot 0 (classId 0) with a class in slot 1 must round-trip as a hole, not compact.
+    MulticlassProfile p;
+    p.Load({ { 1, 10, 0 }, { 4, 10, 0 } }, { 0, 4 });
+    EXPECT_EQ(p.GetClassAtSlot(0), 0u);                          // hole preserved
+    EXPECT_EQ(p.GetClassAtSlot(1), 4u);
+    EXPECT_EQ(p.GetActiveClasses(), (std::vector<uint8>{ 4 }));  // compact view = just the rogue
+    EXPECT_EQ(p.GetProjectedClass(), 4u);
+    EXPECT_TRUE(p.HasOwnedClass(1));                             // owned but in no slot (benched)
 }
 
 TEST(MulticlassProfile, GetOwnedClassMask_orsAllOwnedBits)

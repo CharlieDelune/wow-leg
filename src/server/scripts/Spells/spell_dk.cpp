@@ -1748,7 +1748,11 @@ class spell_dk_icebound_fortitude : public AuraScript
         if (Unit* caster = GetCaster())
         {
             int32 value = amount;
-            uint32 defValue = uint32(caster->ToPlayer()->GetSkillValue(SKILL_DEFENSE) + caster->ToPlayer()->GetRatingBonusValue(CR_DEFENSE_SKILL));
+            Player* player = caster->ToPlayer();
+            uint32 defValue = uint32(player->GetSkillValue(SKILL_DEFENSE) + player->CombineActive([&](uint8 classId)
+            {
+                return player->GetRatingBonusValueForClass(CR_DEFENSE_SKILL, classId);
+            }));
 
             if (defValue > 400)
                 value -= int32((defValue - 400) * 0.15);

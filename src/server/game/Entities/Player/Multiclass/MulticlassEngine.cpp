@@ -125,7 +125,7 @@ namespace Multiclass
             trans->Append(Acore::StringFormat(
                 "INSERT INTO `character_multiclass_spell` (`guid`, `classId`, `spellId`) VALUES ({}, {}, {})"
                 " ON DUPLICATE KEY UPDATE `spellId` = `spellId`", low, classId, spellId));
-        // Synchronous: a follow-up ActivateClass (same tick, e.g. `unlockclass` then `setclass`) reads
+        // Synchronous: a follow-up ActivateClass (same tick, e.g. `unlockclass` then `setslot`) reads
         // this kit back with a sync query and must see it committed, not an in-flight async write.
         CharacterDatabase.DirectCommitTransaction(trans);
 
@@ -171,11 +171,9 @@ namespace Multiclass
                     player->getRace(), classId);
         }
 
-        // Place the class at the requested active position (owned by now, in both branches).
-        bool const placed = std::size_t(slot) < mc.GetActiveClasses().size()
-            ? mc.ReplaceActiveAt(slot, classId)
-            : mc.Activate(classId);
-        if (!placed)
+        // Place the class at the requested slot (owned by now, in both branches). SetSlot fills the slot
+        // whether it was empty or occupied; positions are stable, so this never shifts sibling slots.
+        if (!mc.SetSlot(slot, classId))
         {
             // Defensive: the command path pre-validates slot/cap/duplicates, so this should not fire.
             // Bail before granting so an unvalidated future caller can never leave a class
@@ -353,23 +351,23 @@ namespace Multiclass
         player->SetUInt32Value(PLAYER_XP, displayXp);
     }
 
-    void SwapSlotClass(Player* player, uint8 slot, uint8 newClassId)
+    namespace
     {
-        MulticlassProfile& mc = player->GetMulticlassProfile();
-        Ledger& ledger = player->GetMulticlassLedger();
-        std::vector<uint8> const active = mc.GetActiveClasses();   // snapshot before the swap
-        uint8 const oldClassId = std::size_t(slot) < active.size() ? active[slot] : uint8(0);
-
-        if (oldClassId != 0 && oldClassId != newClassId)
+        // Strip everything exclusive to a class leaving the active set; shared by SwapSlotClass and
+        // UnsetSlot. `activeSnapshot` is the active set BEFORE the removal -- a spell/skill is kept only if
+        // another class that stays active owns it (no privileged render/creation class).
+        void TeardownOutgoingClass(Player* player, uint8 oldClassId, std::vector<uint8> const& activeSnapshot)
         {
+            Ledger& ledger = player->GetMulticlassLedger();
+
             // Bank the outgoing class's book to `_spell` while it is still active, so a later
             // re-activation restores it. Synchronous: a rapid re-swap back to this class reads the book
             // via a sync query and must see committed rows, not an in-flight async write.
             SaveLedger(player, true);
 
-            // Build the other still-active classes' ledgers (everything except this slot).
+            // Build the other still-active classes' ledgers (everything except the outgoing class).
             std::vector<std::vector<uint32>> otherLedgers;
-            for (uint8 cid : active)
+            for (uint8 cid : activeSnapshot)
             {
                 if (cid == oldClassId)
                     continue;
@@ -384,7 +382,7 @@ namespace Multiclass
             if (outItr != ledger.end())
                 for (uint32 spellId : outItr->second)
                     if (!AnotherActiveClassOwns(spellId, otherLedgers))
-                        player->removeSpell(spellId, SPEC_MASK_ALL, false);
+                        player->RemoveSpellAndPurgeRow(spellId);
             player->SetMulticlassInOrchestration(false);
 
             ledger.erase(oldClassId);
@@ -402,7 +400,7 @@ namespace Multiclass
                         continue;
 
                     bool sharedWithOtherActive = false;
-                    for (uint8 cid : active)
+                    for (uint8 cid : activeSnapshot)
                     {
                         if (cid == oldClassId)
                             continue;
@@ -420,22 +418,68 @@ namespace Multiclass
             player->SetMulticlassInOrchestration(false);
         }
 
+        // Reconcile skills/gear/level/projection to the now-final active set and persist, then recompute the
+        // combined stat sheet in place (preserving vitals). Shared by SwapSlotClass and UnsetSlot.
+        void FinalizeActiveSetChange(Player* player)
+        {
+            // Reconcile skills AND skill-teaching spells to the new active set BEFORE checking gear, so a live
+            // set change == a relog (mirrors the login-time _LoadSpells + _LoadSkills prunes). A benched
+            // class's trained proficiency is not a starting line the teardown above removes, so without this
+            // it survives: the teaching spell lingers in character_spell (flagged + deleted only on the next
+            // login -- e.g. 674 Dual Wield), and a stale skill (e.g. 2H Swords) leaves gear to be force-
+            // unequipped + mailed on the next login. Prune both: PruneSpells removes the invalid teaching
+            // spells (and purges their character_spell rows), PruneSkills removes the invalid skill lines.
+            // Guarded like the other removals so nothing is re-attributed to the outgoing class.
+            player->SetMulticlassInOrchestration(true);
+            player->PruneSpellsInvalidForActiveClasses();
+            player->PruneSkillsInvalidForActiveClasses();
+            player->SetMulticlassInOrchestration(false);
+            // The active set -- and thus weapon/armor proficiencies -- is now final. Move any gear the new
+            // set can no longer equip into the bags now, instead of leaving it equipped to be force-
+            // unequipped and mailed on the next login.
+            player->MoveUnusableEquippedItemsToInventory();
+            ReconcileDisplayLevel(player);
+            player->SyncMulticlassProjection();   // slot-0 may have changed -> reproject getClass()
+            player->SaveMulticlassProfile();      // persist the new set (core-owned tables)
+            SaveLedger(player);                   // persist the now-active classes' books
+            // The active set (and thus the combined stat sheet) is now final. Recompute in place, preserving
+            // vitals -- covers a same-level change, where ReconcileDisplayLevel/GiveLevel is a no-op and
+            // nothing else would recompute. (A level-changing change already recomputed via GiveLevel; this
+            // idempotent second pass is harmless.)
+            player->RecalculateMulticlassStats();
+        }
+    }
+
+    void SwapSlotClass(Player* player, uint8 slot, uint8 newClassId)
+    {
+        MulticlassProfile& mc = player->GetMulticlassProfile();
+        std::vector<uint8> const active = mc.GetActiveClasses();   // snapshot before the swap
+        uint8 const oldClassId = mc.GetClassAtSlot(slot);          // class currently in this slot (0 if empty)
+
+        // Tear the outgoing class down only when it is genuinely leaving the active set: not a no-op
+        // self-set on its own slot, and not filling an empty slot (oldClassId == 0). The teardown's
+        // still-active check reads the pre-swap snapshot, which still includes oldClassId.
+        if (oldClassId != 0 && oldClassId != newClassId)
+            TeardownOutgoingClass(player, oldClassId, active);
+
         ActivateClass(player, slot, newClassId);
-        // Reconcile skills to the new active set BEFORE checking gear. A benched class's trained weapon
-        // proficiency (e.g. 2H Swords) is not a starting skill and survives the removal above, so without
-        // this the equippability check below still sees it and the item is only force-unequipped + mailed
-        // on the next login. This mirrors the login-time skill prune, keeping the live swap == a relog.
-        // Guarded like the other skill/spell removals so forgotten proficiency spells are not re-attributed.
-        player->SetMulticlassInOrchestration(true);
-        player->PruneSkillsInvalidForActiveClasses();
-        player->SetMulticlassInOrchestration(false);
-        // The active set — and thus weapon/armor proficiencies — is now final for this swap. Move any
-        // gear the new set can no longer equip into the bags now, instead of leaving it equipped to be
-        // force-unequipped and mailed on the next login.
-        player->MoveUnusableEquippedItemsToInventory();
-        ReconcileDisplayLevel(player);
-        player->SyncMulticlassProjection();   // slot-0 may have changed -> reproject getClass()
-        player->SaveMulticlassProfile();      // persist the new set (core-owned tables)
-        SaveLedger(player);                   // persist the now-active classes' books
+        FinalizeActiveSetChange(player);
+    }
+
+    void UnsetSlot(Player* player, uint8 slot)
+    {
+        MulticlassProfile& mc = player->GetMulticlassProfile();
+        std::vector<uint8> const active = mc.GetActiveClasses();   // snapshot before the removal
+        uint8 const oldClassId = mc.GetClassAtSlot(slot);          // class in this slot (0 if already empty)
+        // Nothing to clear in an empty slot, and never empty the last filled slot -- the projection reads
+        // the slot-order front, so a character must keep at least one active class. active is the compact
+        // set of filled slots, so its size is the live count. The command layer reports both cases to the
+        // user; re-checking here keeps an unvalidated future caller from clearing wrongly.
+        if (oldClassId == 0 || active.size() <= 1)
+            return;
+
+        TeardownOutgoingClass(player, oldClassId, active);
+        mc.ClearSlot(slot);                   // empty this slot in place (guaranteed to succeed by the guard)
+        FinalizeActiveSetChange(player);
     }
 }

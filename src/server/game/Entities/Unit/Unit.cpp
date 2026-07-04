@@ -2264,6 +2264,7 @@ uint32 Unit::CalcArmorReducedDamage(Unit const* attacker, Unit const* victim, co
         // Apply Player CR_ARMOR_PENETRATION rating and buffs from stances\specializations etc.
         if (attacker->IsPlayer())
         {
+            Player const* player = attacker->ToPlayer();   // attacker is Unit const* -> Player const*
             float bonusPct = 0;
             bonusPct += attacker->GetTotalAuraModifier(SPELL_AURA_MOD_ARMOR_PENETRATION_PCT, [spellInfo,attacker](AuraEffect const* aurEff)
             {
@@ -2290,8 +2291,11 @@ uint32 Unit::CalcArmorReducedDamage(Unit const* attacker, Unit const* victim, co
 
             // Cap armor penetration to this number
             maxArmorPen = std::min((armor + maxArmorPen) / 3, armor);
-            // Figure out how much armor do we ignore
-            float armorPen = CalculatePct(maxArmorPen, bonusPct + attacker->ToPlayer()->GetRatingBonusValue(CR_ARMOR_PENETRATION));
+            // Figure out how much armor do we ignore (armor-pen rating combined across the active set)
+            float armorPen = CalculatePct(maxArmorPen, bonusPct + player->CombineActive([&](uint8 classId)
+            {
+                return player->GetRatingBonusValueForClass(CR_ARMOR_PENETRATION, classId);
+            }));
             // Got the value, apply it
             armor -= std::min(armorPen, maxArmorPen);
         }
@@ -3576,9 +3580,9 @@ SpellMissInfo Unit::MagicSpellHitResult(Unit* victim, SpellInfo const* spellInfo
         if (spellInfo->IsAffectingArea())
             modHitChance -= victim->GetTotalAuraModifier(SPELL_AURA_MOD_AOE_AVOIDANCE);
 
-        // Decrease hit chance from victim rating bonus
-        if (victim->IsPlayer())
-            modHitChance -= int32(victim->ToPlayer()->GetRatingBonusValue(CR_HIT_TAKEN_SPELL));
+        // Decrease hit chance from victim rating bonus (combined across the victim's active set)
+        if (Player* victimPlayer = victim->ToPlayer())
+            modHitChance -= int32(victimPlayer->CombineActive([&](uint8 classId) { return victimPlayer->GetRatingBonusValueForClass(CR_HIT_TAKEN_SPELL, classId); }));
     }
 
     int32 HitChance = modHitChance * 100;
@@ -3806,13 +3810,13 @@ SpellMissInfo Unit::SpellHitResult(Unit* victim, Spell const* spell, bool CanRef
 
 uint32 Unit::GetDefenseSkillValue(Unit const* target) const
 {
-    if (IsPlayer())
+    if (Player const* player = ToPlayer())
     {
         // in PvP use full skill instead current skill value
         uint32 value = (target && target->IsPlayer())
-                       ? ToPlayer()->GetMaxSkillValue(SKILL_DEFENSE)
-                       : ToPlayer()->GetSkillValue(SKILL_DEFENSE);
-        value += uint32(ToPlayer()->GetRatingBonusValue(CR_DEFENSE_SKILL));
+                       ? player->GetMaxSkillValue(SKILL_DEFENSE)
+                       : player->GetSkillValue(SKILL_DEFENSE);
+        value += uint32(player->CombineActive([&](uint8 classId) { return player->GetRatingBonusValueForClass(CR_DEFENSE_SKILL, classId); }));
         return value;
     }
     else
@@ -3988,18 +3992,18 @@ uint32 Unit::GetWeaponSkillValue (WeaponAttackType attType, Unit const* target) 
         value = (target && target->IsControlledByPlayer())
                 ? player->GetMaxSkillValue(skill)
                 : player->GetSkillValue(skill);
-        // Modify value from ratings
-        value += uint32(player->GetRatingBonusValue(CR_WEAPON_SKILL));
+        // Modify value from ratings (each weapon-skill rating combined across the active set)
+        value += uint32(player->CombineActive([&](uint8 classId) { return player->GetRatingBonusValueForClass(CR_WEAPON_SKILL, classId); }));
         switch (attType)
         {
             case BASE_ATTACK:
-                value += uint32(player->GetRatingBonusValue(CR_WEAPON_SKILL_MAINHAND));
+                value += uint32(player->CombineActive([&](uint8 classId) { return player->GetRatingBonusValueForClass(CR_WEAPON_SKILL_MAINHAND, classId); }));
                 break;
             case OFF_ATTACK:
-                value += uint32(player->GetRatingBonusValue(CR_WEAPON_SKILL_OFFHAND));
+                value += uint32(player->CombineActive([&](uint8 classId) { return player->GetRatingBonusValueForClass(CR_WEAPON_SKILL_OFFHAND, classId); }));
                 break;
             case RANGED_ATTACK:
-                value += uint32(player->GetRatingBonusValue(CR_WEAPON_SKILL_RANGED));
+                value += uint32(player->CombineActive([&](uint8 classId) { return player->GetRatingBonusValueForClass(CR_WEAPON_SKILL_RANGED, classId); }));
                 break;
             default:
                 break;
@@ -15444,11 +15448,11 @@ void Unit::KnockbackFrom(float x, float y, float speedXY, float speedZ)
 float Unit::GetCombatRatingReduction(CombatRating cr) const
 {
     if (Player const* player = ToPlayer())
-        return player->GetRatingBonusValue(cr);
+        return player->CombineActive([&](uint8 classId) { return player->GetRatingBonusValueForClass(cr, classId); });
     // Player's pet get resilience from owner
     else if (IsPet() && GetOwner())
         if (Player* owner = GetOwner()->ToPlayer())
-            return owner->GetRatingBonusValue(cr);
+            return owner->CombineActive([&](uint8 classId) { return owner->GetRatingBonusValueForClass(cr, classId); });
 
     return 0.0f;
 }

@@ -253,3 +253,32 @@ TEST(MulticlassUnlocked, ClaimingRangesOverWholePoolDeterministically)
     EXPECT_EQ(got, (std::vector<uint8>{1, 8}));
     EXPECT_TRUE(Multiclass::ClaimingUnlockedClasses(pool, 0u).empty());  // no class-specific entry
 }
+
+TEST(MulticlassCombineValues, HighestReturnsMaxAcrossClasses)
+{
+    EXPECT_FLOAT_EQ(CombineValues(MULTICLASS_STATS_HIGHEST, { 10.0f, 25.0f, 18.0f }), 25.0f);
+}
+
+TEST(MulticlassCombineValues, SumAddsEveryClass)
+{
+    EXPECT_FLOAT_EQ(CombineValues(MULTICLASS_STATS_SUM, { 10.0f, 25.0f, 18.0f }), 53.0f);
+}
+
+TEST(MulticlassCombineValues, SingleElementIsIdentityInBothModes)
+{
+    EXPECT_FLOAT_EQ(CombineValues(MULTICLASS_STATS_HIGHEST, { 42.0f }), 42.0f);   // byte-vanilla invariant
+    EXPECT_FLOAT_EQ(CombineValues(MULTICLASS_STATS_SUM, { 42.0f }), 42.0f);
+}
+
+TEST(MulticlassCombineValues, EmptyIsNeutralZeroInBothModes)
+{
+    EXPECT_FLOAT_EQ(CombineValues(MULTICLASS_STATS_HIGHEST, {}), 0.0f);
+    EXPECT_FLOAT_EQ(CombineValues(MULTICLASS_STATS_SUM, {}), 0.0f);
+}
+
+TEST(MulticlassCombineValues, HighestPicksLeastNegativeNotAZeroFloor)
+{
+    // Attack-power formulas go negative at low stats (INT classes: STR - 10). Max must return the
+    // least-negative contribution, never clamp to 0.
+    EXPECT_FLOAT_EQ(CombineValues(MULTICLASS_STATS_HIGHEST, { -8.0f, -3.0f }), -3.0f);
+}

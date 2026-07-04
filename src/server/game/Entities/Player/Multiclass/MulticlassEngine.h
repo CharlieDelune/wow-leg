@@ -39,6 +39,7 @@ namespace Multiclass
     void UnlockClass(Player* player, uint8 classId);
     void ActivateClass(Player* player, uint8 slot, uint8 classId);
     void SwapSlotClass(Player* player, uint8 slot, uint8 newClassId);
+    void UnsetSlot(Player* player, uint8 slot);
     void ReconcileDisplayLevel(Player* player);
     void RouteExperience(Player* player, uint32 effectiveXp);
     void AttributeLearnedSpell(Player* player, uint32 spellId);

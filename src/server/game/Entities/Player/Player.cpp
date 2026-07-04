@@ -324,6 +324,9 @@ Player::Player(WorldSession* session): Unit(), m_mover(this), _cinematicMgr(*thi
     for (uint8 i = 0; i < MAX_COMBAT_RATING; i++)
         m_baseRatingValue[i] = 0;
 
+    for (uint8 i = 0; i < 3; ++i)
+        m_hasteRatingAppliedMod[i] = 0.0f;
+
     m_baseSpellPower = 0;
     m_baseSpellDamage = 0;
     m_baseSpellHealing = 0;
@@ -1334,6 +1337,11 @@ bool Player::IsMulticlassManaged() const
         && !GetMulticlassProfile().GetActiveClasses().empty();
 }
 
+uint32 Player::GetMulticlassCombineMode() const
+{
+    return sWorld->getIntConfig(CONFIG_MULTICLASS_COMBINED_STATS);
+}
+
 void Player::ToggleAFK()
 {
     ToggleFlag(PLAYER_FLAGS, PLAYER_FLAGS_AFK);
@@ -2022,7 +2030,7 @@ void Player::RegenerateHealth()
     // normal regen case (maybe partly in combat case)
     else if (!IsInCombat() || HasRegenDuringCombatAura())
     {
-        addvalue = OCTRegenHPPerSpirit() * HealthIncreaseRate;
+        addvalue = CombineActive([&](uint8 classId) { return OCTRegenHPPerSpirit(classId); }) * HealthIncreaseRate;
 
         if (!IsStandState())
         {
@@ -2485,19 +2493,18 @@ void Player::GiveLevel(uint8 level)
     if (Guild* guild = GetGuild())
         guild->UpdateMemberData(this, GUILD_MEMBER_DATA_LEVEL, level);
 
-    PlayerLevelInfo info;
-    sObjectMgr->GetPlayerLevelInfo(getRace(true), getClass(), level, &info);
-
-    PlayerClassLevelInfo classInfo;
-    sObjectMgr->GetPlayerClassLevelInfo(getClass(), level, &classInfo);
+    uint32 combinedStats[MAX_STATS];
+    uint32 combinedHealth = 0;
+    uint32 combinedMana = 0;
+    CombineBaseStatPool(level, combinedStats, combinedHealth, combinedMana);
 
     WorldPackets::Misc::LevelUpInfo packet;
     packet.Level = level;
-    packet.HealthDelta = int32(classInfo.basehealth) - int32(GetCreateHealth());
+    packet.HealthDelta = int32(combinedHealth) - int32(GetCreateHealth());
 
     /// @todo find some better solution
     // for (int i = 0; i < MAX_POWERS; ++i)
-    packet.PowerDelta[0] = int32(classInfo.basemana) - int32(GetCreateMana());
+    packet.PowerDelta[0] = int32(combinedMana) - int32(GetCreateMana());
     packet.PowerDelta[1] = 0;
     packet.PowerDelta[2] = 0;
     packet.PowerDelta[3] = 0;
@@ -2505,7 +2512,7 @@ void Player::GiveLevel(uint8 level)
     packet.PowerDelta[5] = 0;
 
     for (uint8 i = STAT_STRENGTH; i < MAX_STATS; ++i)
-        packet.StatDelta[i] = int32(info.stats[i]) - GetCreateStat(Stats(i));
+        packet.StatDelta[i] = int32(combinedStats[i]) - GetCreateStat(Stats(i));
 
     SendDirectMessage(packet.Write());
 
@@ -2522,10 +2529,10 @@ void Player::GiveLevel(uint8 level)
 
     // save base values (bonuses already included in stored stats
     for (uint8 i = STAT_STRENGTH; i < MAX_STATS; ++i)
-        SetCreateStat(Stats(i), info.stats[i]);
+        SetCreateStat(Stats(i), combinedStats[i]);
 
-    SetCreateHealth(classInfo.basehealth);
-    SetCreateMana(classInfo.basemana);
+    SetCreateHealth(combinedHealth);
+    SetCreateMana(combinedMana);
 
     InitTalentForLevel();
     InitTaxiNodesForLevel();
@@ -2606,16 +2613,46 @@ void Player::InitTalentForLevel()
         SendTalentsInfoData(false);                         // update at client
 }
 
+void Player::CombineBaseStatPool(uint8 level, uint32 (&outStats)[MAX_STATS], uint32& outHealth, uint32& outMana) const
+{
+    uint8 const race = getRace(true);
+
+    // Inputs are exact small integers (levelstats / classlevelstats rows); sums/maxes of a few of them
+    // are exact in float, so the uint32() truncation back is lossless -> single-class byte-identity.
+    for (uint8 i = STAT_STRENGTH; i < MAX_STATS; ++i)
+    {
+        outStats[i] = uint32(CombineActive([&](uint8 classId)
+        {
+            PlayerLevelInfo li;
+            sObjectMgr->GetPlayerLevelInfo(race, classId, level, &li);
+            return float(li.stats[i]);
+        }));
+    }
+
+    outHealth = uint32(CombineActive([&](uint8 classId)
+    {
+        PlayerClassLevelInfo ci;
+        sObjectMgr->GetPlayerClassLevelInfo(classId, level, &ci);
+        return float(ci.basehealth);
+    }));
+
+    outMana = uint32(CombineActive([&](uint8 classId)
+    {
+        PlayerClassLevelInfo ci;
+        sObjectMgr->GetPlayerClassLevelInfo(classId, level, &ci);
+        return float(ci.basemana);
+    }));
+}
+
 void Player::InitStatsForLevel(bool reapplyMods)
 {
     if (reapplyMods)                                        //reapply stats values only on .reset stats (level) command
         _RemoveAllStatBonuses();
 
-    PlayerClassLevelInfo classInfo;
-    sObjectMgr->GetPlayerClassLevelInfo(getClass(), GetLevel(), &classInfo);
-
-    PlayerLevelInfo info;
-    sObjectMgr->GetPlayerLevelInfo(getRace(true), getClass(), GetLevel(), &info);
+    uint32 combinedStats[MAX_STATS];
+    uint32 combinedHealth = 0;
+    uint32 combinedMana = 0;
+    CombineBaseStatPool(GetLevel(), combinedStats, combinedHealth, combinedMana);
 
     uint32 maxPlayerLevel = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);
     sScriptMgr->OnPlayerSetMaxLevel(this, maxPlayerLevel);
@@ -2635,15 +2672,15 @@ void Player::InitStatsForLevel(bool reapplyMods)
 
     // save base values (bonuses already included in stored stats
     for (uint8 i = STAT_STRENGTH; i < MAX_STATS; ++i)
-        SetCreateStat(Stats(i), info.stats[i]);
+        SetCreateStat(Stats(i), combinedStats[i]);
 
     for (uint8 i = STAT_STRENGTH; i < MAX_STATS; ++i)
-        SetStat(Stats(i), info.stats[i]);
+        SetStat(Stats(i), combinedStats[i]);
 
-    SetCreateHealth(classInfo.basehealth);
+    SetCreateHealth(combinedHealth);
 
     //set create powers
-    SetCreateMana(classInfo.basemana);
+    SetCreateMana(combinedMana);
 
     SetArmor(int32(m_createStats[STAT_AGILITY] * 2));
 
@@ -2725,7 +2762,7 @@ void Player::InitStatsForLevel(bool reapplyMods)
     for (uint8 i = POWER_MANA; i < MAX_POWERS; ++i)
         SetMaxPower(Powers(i),  uint32(GetCreatePowers(Powers(i))));
 
-    SetMaxHealth(classInfo.basehealth);                     // stamina bonus will applied later
+    SetMaxHealth(combinedHealth);                           // stamina bonus will applied later
 
     // cleanup mounted state (it will set correctly at aura loading if player saved at mount.
     SetUInt32Value(UNIT_FIELD_MOUNTDISPLAYID, 0);
@@ -2772,6 +2809,33 @@ void Player::InitStatsForLevel(bool reapplyMods)
     // update level to hunter/summon pet
     if (Pet* pet = GetPet())
         pet->SynchronizeLevelWithOwner();
+}
+
+void Player::RecalculateMulticlassStats()
+{
+    // Snapshot current vitals. InitStatsForLevel rebuilds the base pool and tops health/power to the
+    // NEW maxima (a full heal), so restore the snapshot clamped afterwards -- a live swap or config
+    // reload must not full-heal or drop the player dead. Runs even when unmanaged: the CombineActive
+    // fallback then yields vanilla stats, which is exactly what a disable reload needs.
+    uint32 const savedHealth = GetHealth();
+    uint32 savedPower[MAX_POWERS];
+    for (uint8 i = POWER_MANA; i < MAX_POWERS; ++i)
+        savedPower[i] = GetPower(Powers(i));
+
+    InitStatsForLevel(true);
+    UpdateAllStats();
+
+    // DEFENSIVE, IDEMPOTENT haste re-base. InitStatsForLevel(true) above already re-based haste: its
+    // _RemoveAllStatBonuses/_ApplyAllStatBonuses cycle removes then re-applies every item/aura haste mod
+    // through ApplyRatingMod under the NEW combined multiplier. This call re-applies the same three haste
+    // ratings a second time and is thus a no-op today; it stays as an explicit, local guarantee that
+    // "haste tracks the active set" even if that stat-bonus cycle changes. No-op for a single-class /
+    // disabled character.
+    ReapplyHasteRatingMods();
+
+    SetHealth(std::min<uint32>(savedHealth, GetMaxHealth()));
+    for (uint8 i = POWER_MANA; i < MAX_POWERS; ++i)
+        SetPower(Powers(i), std::min<uint32>(savedPower[i], GetMaxPower(Powers(i))));
 }
 
 bool Player::HasActivePowerType(Powers power)
@@ -3127,8 +3191,10 @@ bool Player::addSpell(uint32 spellId, uint8 addSpecMask, bool updateActive, bool
     return true;
 }
 
-bool Player::CheckSkillLearnedBySpell(uint32 spellId)
+bool Player::IsSkillLearnedBySpellValid(uint32 spellId, uint32& outErrorSkill)
 {
+    outErrorSkill = 0;
+
     if (!sWorld->getBoolConfig(CONFIG_VALIDATE_SKILL_LEARNED_BY_SPELLS))
         return true;
 
@@ -3149,14 +3215,21 @@ bool Player::CheckSkillLearnedBySpell(uint32 spellId)
             errorSkill = pSkill->id;
     }
 
+    outErrorSkill = errorSkill;
+    return errorSkill == 0;
+}
+
+bool Player::CheckSkillLearnedBySpell(uint32 spellId)
+{
+    uint32 errorSkill = 0;
+    if (IsSkillLearnedBySpellValid(spellId, errorSkill))
+        return true;
+
     if (errorSkill)
-    {
         LOG_ERROR("entities.player", "Player {} (GUID: {}), has spell ({}) that teach skill ({}) which is invalid for the race/class combination (Race: {}, Class: {}). Will be deleted.",
             GetName(), GetGUID().GetCounter(), spellId, errorSkill, getRace(), getClass());
 
-        return false;
-    }
-    return true;
+    return false;
 }
 
 bool Player::_addSpell(uint32 spellId, uint8 addSpecMask, bool temporary, bool learnFromSkill /*= false*/)
@@ -5158,10 +5231,9 @@ uint32 Player::GetShieldBlockValue() const
     return uint32(value);
 }
 
-float Player::GetMeleeCritFromAgility()
+float Player::GetMeleeCritFromAgility(uint8 pclass)
 {
     uint8 level = GetLevel();
-    uint32 pclass = getClass();
 
     if (level > GT_MAX_LEVEL)
         level = GT_MAX_LEVEL;
@@ -5175,7 +5247,7 @@ float Player::GetMeleeCritFromAgility()
     return crit * 100.0f;
 }
 
-void Player::GetDodgeFromAgility(float& diminishing, float& nondiminishing)
+void Player::GetDodgeFromAgility(uint8 pclass, float& diminishing, float& nondiminishing)
 {
     // Table for base dodge values
     const float dodge_base[MAX_CLASSES] =
@@ -5209,7 +5281,6 @@ void Player::GetDodgeFromAgility(float& diminishing, float& nondiminishing)
     };
 
     uint8 level = GetLevel();
-    uint32 pclass = getClass();
 
     if (level > GT_MAX_LEVEL)
         level = GT_MAX_LEVEL;
@@ -5228,10 +5299,9 @@ void Player::GetDodgeFromAgility(float& diminishing, float& nondiminishing)
     nondiminishing = 100.0f * (dodge_base[pclass - 1] + base_agility * dodgeRatio->ratio * crit_to_dodge[pclass - 1]);
 }
 
-float Player::GetSpellCritFromIntellect()
+float Player::GetSpellCritFromIntellect(uint8 pclass)
 {
     uint8 level = GetLevel();
-    uint32 pclass = getClass();
 
     if (level > GT_MAX_LEVEL)
         level = GT_MAX_LEVEL;
@@ -5245,7 +5315,7 @@ float Player::GetSpellCritFromIntellect()
     return crit * 100.0f;
 }
 
-float Player::GetRatingMultiplier(CombatRating cr) const
+float Player::GetRatingMultiplierForClass(CombatRating cr, uint8 classId) const
 {
     uint8 level = GetLevel();
 
@@ -5254,16 +5324,26 @@ float Player::GetRatingMultiplier(CombatRating cr) const
 
     GtCombatRatingsEntry const* Rating = sGtCombatRatingsStore.LookupEntry(cr * GT_MAX_LEVEL + level - 1);
     // gtOCTClassCombatRatingScalarStore.dbc starts with 1, CombatRating with zero, so cr+1
-    GtOCTClassCombatRatingScalarEntry const* classRating = sGtOCTClassCombatRatingScalarStore.LookupEntry((getClass() - 1) * GT_MAX_RATING + cr + 1);
+    GtOCTClassCombatRatingScalarEntry const* classRating = sGtOCTClassCombatRatingScalarStore.LookupEntry((classId - 1) * GT_MAX_RATING + cr + 1);
     if (!Rating || !classRating)
         return 1.0f;                                        // By default use minimum coefficient (not must be called)
 
     return classRating->ratio / Rating->ratio;
 }
 
+float Player::GetRatingMultiplier(CombatRating cr) const
+{
+    return GetRatingMultiplierForClass(cr, getClass());
+}
+
+float Player::GetRatingBonusValueForClass(CombatRating cr, uint8 classId) const
+{
+    return float(GetUInt32Value(static_cast<uint16>(PLAYER_FIELD_COMBAT_RATING_1) + cr)) * GetRatingMultiplierForClass(cr, classId);
+}
+
 float Player::GetRatingBonusValue(CombatRating cr) const
 {
-    return float(GetUInt32Value(static_cast<uint16>(PLAYER_FIELD_COMBAT_RATING_1) + cr)) * GetRatingMultiplier(cr);
+    return GetRatingBonusValueForClass(cr, getClass());
 }
 
 float Player::GetExpertiseDodgeOrParryReduction(WeaponAttackType attType) const
@@ -5280,10 +5360,9 @@ float Player::GetExpertiseDodgeOrParryReduction(WeaponAttackType attType) const
     return 0.0f;
 }
 
-float Player::OCTRegenHPPerSpirit()
+float Player::OCTRegenHPPerSpirit(uint8 pclass)
 {
     uint8 level = GetLevel();
-    uint32 pclass = getClass();
 
     if (level > GT_MAX_LEVEL)
         level = GT_MAX_LEVEL;
@@ -5303,10 +5382,9 @@ float Player::OCTRegenHPPerSpirit()
     return regen;
 }
 
-float Player::OCTRegenMPPerSpirit()
+float Player::OCTRegenMPPerSpirit(uint8 pclass)
 {
     uint8 level = GetLevel();
-    uint32 pclass = getClass();
 
     if (level > GT_MAX_LEVEL)
         level = GT_MAX_LEVEL;
@@ -5324,13 +5402,19 @@ float Player::OCTRegenMPPerSpirit()
 
 void Player::ApplyRatingMod(CombatRating cr, int32 value, bool apply)
 {
-    float oldRating = m_baseRatingValue[cr];
     m_baseRatingValue[cr] += (apply ? value : -value);
     // explicit affected values
     if (cr == CR_HASTE_MELEE || cr == CR_HASTE_RANGED || cr == CR_HASTE_SPELL)
     {
-        float const mult = GetRatingMultiplier(cr);
-        float const oldVal = oldRating * mult;
+        // Combine the per-class haste scalar across the active set (single getClass() eval when
+        // unmanaged -> byte-vanilla). Remove EXACTLY the previously-applied amount (tracked per haste
+        // rating) rather than oldRating*mult: ApplyPercentModFloatVar is multiplicative, so when the
+        // multiplier changes with the active set (see ReapplyHasteRatingMods) only an exact removal
+        // avoids drift. In the constant-multiplier (single-class) case the stored value equals the old
+        // oldRating*mult bit-for-bit, so behavior is identical.
+        uint8 const hasteIdx = cr - CR_HASTE_MELEE;
+        float const mult = CombineActive([&](uint8 classId) { return GetRatingMultiplierForClass(cr, classId); });
+        float const oldVal = m_hasteRatingAppliedMod[hasteIdx];
         float const newVal = m_baseRatingValue[cr] * mult;
         switch (cr)
         {
@@ -5351,9 +5435,21 @@ void Player::ApplyRatingMod(CombatRating cr, int32 value, bool apply)
             default:
                 break;
         }
+        m_hasteRatingAppliedMod[hasteIdx] = newVal;
     }
 
     UpdateRating(cr);
+}
+
+void Player::ReapplyHasteRatingMods()
+{
+    // A live class swap / config reload changes the combined haste multiplier without any rating delta.
+    // Route each haste rating back through ApplyRatingMod (value 0): it removes the exact old
+    // contribution (m_hasteRatingAppliedMod) and re-applies base * newCombinedMult. Byte-vanilla for a
+    // single-class character -- combined mult == getClass() mult, so remove and re-apply cancel exactly.
+    ApplyRatingMod(CR_HASTE_MELEE, 0, true);
+    ApplyRatingMod(CR_HASTE_RANGED, 0, true);
+    ApplyRatingMod(CR_HASTE_SPELL, 0, true);
 }
 
 void Player::SetRegularAttackTime()
@@ -12753,6 +12849,49 @@ void Player::PruneSkillsInvalidForActiveClasses()
 
     for (uint16 skillId : invalid)
         SetSkill(skillId, 0, 0, 0);
+}
+
+void Player::PruneSpellsInvalidForActiveClasses()
+{
+    // Live mirror of the login-time spell prune (_LoadSpells -> CheckSkillLearnedBySpell): remove any spell
+    // whose taught skill is invalid for the current active class set. The active-set teardown's ledger-based
+    // removal misses broadly-shared weapon proficiencies (e.g. 674 Dual Wield, whose owner attribution does
+    // not land it in the outgoing class's in-memory ledger), so without this they linger in character_spell
+    // until a relog prunes them. Silent by design (no per-spell error log): a benched off-class's
+    // proficiencies are expected to become invalid; they stay banked in character_multiclass_spell and are
+    // restored on re-slot, so removing them here is not data loss. Skill lines are pruned separately by
+    // PruneSkillsInvalidForActiveClasses; this handles the spells so neither lingers to the next login.
+    std::vector<uint32> invalid;
+    for (auto const& pair : m_spells)
+    {
+        if (pair.second->State == PLAYERSPELL_REMOVED)
+            continue;
+
+        uint32 errorSkill = 0;
+        if (!IsSkillLearnedBySpellValid(pair.first, errorSkill))
+            invalid.push_back(pair.first);
+    }
+
+    for (uint32 spellId : invalid)
+        RemoveSpellAndPurgeRow(spellId);
+}
+
+void Player::RemoveSpellAndPurgeRow(uint32 spellId)
+{
+    // removeSpell on a PLAYERSPELL_NEW spell takes the delete+erase path and never marks it
+    // PLAYERSPELL_REMOVED, so _SaveSpells never deletes its character_spell row. A multiclass off-class
+    // proficiency can be NEW in memory yet still have a persisted row -- at login it is cascade-taught
+    // as NEW by another class spell (spell_learn_spell) on top of its own loaded row -- so on bench its
+    // row would orphan and be flagged + deleted on the NEXT login. Delete the row directly so nothing
+    // lingers. If the incoming class re-learns the spell in the same swap, its INSERT is enqueued long
+    // after this DELETE (character_spell saves at logout, not mid-swap), so async FIFO keeps it. The
+    // spell stays banked in character_multiclass_spell and is restored on re-slot -- no data loss.
+    removeSpell(spellId, SPEC_MASK_ALL, false);
+
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_SPELL_BY_SPELL);
+    stmt->SetData(0, GetGUID().GetCounter());
+    stmt->SetData(1, spellId);
+    CharacterDatabase.Execute(stmt);
 }
 
 // After the active class set changes (a multiclass class swap), gear equipped under the outgoing

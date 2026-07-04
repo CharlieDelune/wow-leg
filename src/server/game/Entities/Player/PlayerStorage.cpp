@@ -5009,14 +5009,18 @@ void Player::_LoadMulticlassProfile()
         } while (result->NextRow());
     }
 
-    std::vector<uint8> activeOrder;
+    std::vector<uint8> slots;   // positional: index == slot, value == classId (0 == empty); holes preserved
     if (QueryResult result = CharacterDatabase.Query(Acore::StringFormat(
-        "SELECT `classId` FROM `character_multiclass_slot` WHERE `guid` = {} AND `classId` <> 0 ORDER BY `slot`",
+        "SELECT `slot`, `classId` FROM `character_multiclass_slot` WHERE `guid` = {} AND `classId` <> 0",
         low)))
     {
         do
         {
-            activeOrder.push_back(result->Fetch()[0].Get<uint8>());
+            Field* fields = result->Fetch();
+            uint8 const slot = fields[0].Get<uint8>();
+            if (slot >= slots.size())
+                slots.resize(slot + 1, uint8(0));
+            slots[slot] = fields[1].Get<uint8>();
         } while (result->NextRow());
     }
 
@@ -5024,13 +5028,14 @@ void Player::_LoadMulticlassProfile()
     if (pool.empty())
     {
         pool.push_back({ getClass(), GetLevel(), GetUInt32Value(PLAYER_XP) });
-        activeOrder.push_back(getClass());
+        slots.assign(1, getClass());   // slot 0 = the character's own class
     }
 
-    m_multiclassProfile.Load(pool, activeOrder);
+    m_multiclassProfile.Load(pool, slots);
 
     LOG_DEBUG("entities.player", "Multiclass profile loaded for {}: owned={}, active={}, cap={}",
-        GetGUID().ToString(), pool.size(), activeOrder.size(), uint32(m_multiclassProfile.GetMaxActiveClasses()));
+        GetGUID().ToString(), pool.size(), m_multiclassProfile.GetActiveClasses().size(),
+        uint32(m_multiclassProfile.GetMaxActiveClasses()));
 
     SyncMulticlassProjection();
 }
@@ -5055,11 +5060,14 @@ void Player::_SaveMulticlassProfile(CharacterDatabaseTransaction trans)
             mc.GetClassLevel(classId), mc.GetClassXp(classId)));
 
     trans->Append(Acore::StringFormat("DELETE FROM `character_multiclass_slot` WHERE `guid` = {}", low));
-    uint8 slot = 0;
-    for (uint8 classId : mc.GetActiveClasses())
-        trans->Append(Acore::StringFormat(
-            "INSERT INTO `character_multiclass_slot` (`guid`, `slot`, `classId`, `unlocked`) VALUES ({}, {}, {}, 1)",
-            low, slot++, classId));
+    // Persist each filled slot at its real position; empty slots are simply not written and are
+    // reconstructed as holes on load (from the `slot` column), keeping slot indices stable across a relog.
+    std::vector<uint8> const& slots = mc.GetSlots();
+    for (std::size_t slot = 0; slot < slots.size(); ++slot)
+        if (slots[slot] != 0)
+            trans->Append(Acore::StringFormat(
+                "INSERT INTO `character_multiclass_slot` (`guid`, `slot`, `classId`, `unlocked`) VALUES ({}, {}, {}, 1)",
+                low, uint32(slot), slots[slot]));
 }
 
 // getClass() is a projection of active[0]. Keep UNIT_FIELD_BYTES_0 (byte 1 = class) in sync so the
@@ -5567,18 +5575,23 @@ bool Player::LoadFromDB(ObjectGuid playerGuid, CharacterDatabaseQueryHolder cons
     SetGuidValue(PLAYER_DUEL_ARBITER, ObjectGuid::Empty);
     SetUInt32Value(PLAYER_DUEL_TEAM, 0);
 
+    // Load the class SET before InitStatsForLevel (and before the OnPlayerLoadFromDB hook / _LoadSkills).
+    // P2b base-stat init combines the base attribute pool and base HP/mana across the ACTIVE SET, so the
+    // profile must be seeded first: otherwise IsMulticlassManaged() is still false here and CombineActive
+    // falls back to the single creation class, so a multiclass character would log in on a single-class
+    // base pool (self-heals only after the first in-session swap/level-up, then reverts on relog). It must
+    // also precede the module's ledger load in that hook (which reads the active classes) and every
+    // getClassMask() skill/spell gate, so the active off-classes' skill lines and spells survive. Seeds
+    // from getClass()/GetLevel()/PLAYER_XP (all set from the DB row above) and only reprojects getClass()
+    // to the slot-0 active class -- no base-pool, stat, or level side-effects of its own -- so it is safe
+    // to run ahead of the reset/init block below.
+    _LoadMulticlassProfile();
+
     // reset stats before loading any modifiers
     InitStatsForLevel();
     InitGlyphsForLevel();
     InitTaxiNodesForLevel();
     InitRunes();
-
-    // Load the class SET before the OnPlayerLoadFromDB hook and _LoadSkills: the module's ledger load
-    // (in that hook) reads the active classes, and getClassMask() must reflect the active
-    // off-classes when the core validates skills/spells so their skill lines and spells survive. Runs
-    // after InitStatsForLevel, so base-stat init still uses the character's own class (stats are P2);
-    // this only reprojects getClass() to the slot-0 active class for display and class-mask gates.
-    _LoadMulticlassProfile();
 
     sScriptMgr->OnPlayerLoadFromDB(this);
 
@@ -6706,7 +6719,19 @@ void Player::_LoadSpells(PreparedQueryResult result)
             if (CheckSkillLearnedBySpell(spellId))
                 addSpell(spellId, specMask, true);
             else
-                removeSpell(spellId, SPEC_MASK_ALL, false);
+            {
+                // The spell failed validation (CheckSkillLearnedBySpell already logged why) and was never
+                // addSpell'd, so removeSpell no-ops -- it is not in m_spells. The stale row would then
+                // survive and be re-read + re-logged on EVERY login. Delete it directly so the logged
+                // "Will be deleted" actually happens. Chronic for multiclass: a benched off-class's weapon
+                // proficiencies are invalid for the active set; they stay banked in character_multiclass_spell
+                // and are restored on re-slot, so removing the character_spell row here is not data loss.
+                removeSpell(spellId, SPEC_MASK_ALL, false);   // covers the rare case it was chain-added this pass
+                CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_SPELL_BY_SPELL);
+                stmt->SetData(0, GetGUID().GetCounter());
+                stmt->SetData(1, spellId);
+                CharacterDatabase.Execute(stmt);
+            }
         } while (result->NextRow());
     }
 }

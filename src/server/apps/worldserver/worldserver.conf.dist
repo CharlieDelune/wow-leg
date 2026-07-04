@@ -2338,6 +2338,17 @@ Multiclass.Enable = 0
 Multiclass.MaxActiveClasses = 3
 
 #
+#    Multiclass.CombinedStats
+#        Description: How an active off-class's stats combine into the character's single stat sheet.
+#                     Governs both the base pool (STR/AGI/STA/INT/SPI, base HP/mana) and every
+#                     per-class derived formula (attack power, crit, parry, dodge, spell crit, mana
+#                     regen). A single-class character is unaffected either way.
+#        Default:     0 - (highest: per-stat max across active classes; bounded, no inflation)
+#                     1 - (sum: additive across active classes; the OP sandbox)
+
+Multiclass.CombinedStats = 0
+
+#
 ###################################################################################################
 
 ###################################################################################################
