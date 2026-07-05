@@ -75,7 +75,17 @@ void WorldSession::HandleTalentWipeConfirmOpcode(WorldPacket& recvData)
     if (GetPlayer()->HasUnitState(UNIT_STATE_DIED))
         GetPlayer()->RemoveAurasByType(SPELL_AURA_FEIGN_DEATH);
 
-    if (!(_player->resetTalents()))
+    // Multiclass: reset the talents of the class THIS trainer trains (a warrior trainer wipes warrior
+    // talents, a mage trainer wipes mage talents), active or benched -- not the projected/slot-0 class.
+    // A class trainer that passed CanResetTalents always yields a non-zero class the player owns; the
+    // fallback resetTalents() keeps the native (unmanaged) and non-class-trainer paths byte-vanilla.
+    bool reset;
+    if (uint8 const trainerClass = _player->IsMulticlassManaged() ? unit->GetTrainerClass() : 0)
+        reset = _player->ResetClassTalents(trainerClass);
+    else
+        reset = _player->resetTalents();
+
+    if (!reset)
     {
         WorldPacket data(MSG_TALENT_WIPE_CONFIRM, 8 + 4);  //you have not any talent
         data << uint64(0);

@@ -198,6 +198,13 @@ namespace Multiclass
         player->SetMulticlassInOrchestration(false);
 
         ledger[classId] = std::move(spells);
+
+        // Bring the newly-active class's persisted talents live (auras + specMask bit 0). Guarded so the
+        // talent-triggered spell grants are not re-attributed by the learn hook. A brand-new class has no
+        // talents yet -> no-op. The projected view is refreshed by FinalizeActiveSetChange.
+        player->SetMulticlassInOrchestration(true);
+        player->ActivateClassTalents(classId);
+        player->SetMulticlassInOrchestration(false);
     }
 
     void AttributeLearnedSpell(Player* player, uint32 spellId)
@@ -309,6 +316,13 @@ namespace Multiclass
         auto const xpToNext = [](uint8 level) -> uint32 { return sObjectMgr->GetXPForLevel(level); };
         LocaleConstant const loc = player->GetSession()->GetSessionDbcLocale();
 
+        // Snapshot before routing: the projected class's own level and the native display level. The projected
+        // talent-point view only needs a direct refresh when the projected class itself dinged AND the display
+        // level stayed put (so ReconcileDisplayLevel's GiveLevel never fired to resend the packet for us).
+        uint8 const projected = mc.GetProjectedClass();
+        uint8 const projectedLevelBefore = projected != 0 ? mc.GetClassLevel(projected) : 0;
+        uint8 const displayLevelBefore = player->GetLevel();
+
         // GetActiveClassesAtMinLevel is a snapshot of the pre-award receivers (a copy), so mutating the
         // profile inside the loop is safe; every tied-lowest active class gets the FULL award.
         for (uint8 classId : mc.GetActiveClassesAtMinLevel())
@@ -330,6 +344,16 @@ namespace Multiclass
         // level), monotonic, and a no-op unless a threshold (level 5 / 10) was just crossed -- so the common
         // per-kill path is a cheap compare with no DB write.
         GrantSlotCapacity(player, MulticlassProfile::SlotCapacityForLevel(mc.GetMaxOwnedLevel()));
+
+        // Refresh the projected class's talent-point register ONLY when it actually dinged this award while the
+        // display level stayed put -- i.e. the projected class dinged while a tied-lowest sibling with less
+        // within-level XP pinned the display level (minLevel == cur), so ReconcileDisplayLevel's GiveLevel ->
+        // InitTalentForLevel never fired. Guarding here keeps the common per-kill path from emitting an
+        // unsolicited SMSG_TALENTS_INFO on every XP tick (byte-vanilla: retail sends it only on ding) and
+        // avoids a redundant second send on a normal ding (where GiveLevel already resent it).
+        if (projected != 0 && mc.GetClassLevel(projected) != projectedLevelBefore
+            && player->GetLevel() == displayLevelBefore)
+            player->RecomputeProjectedTalentView();
     }
 
     void ReconcileDisplayLevel(Player* player)
@@ -426,6 +450,12 @@ namespace Multiclass
                 }
             }
             player->SetMulticlassInOrchestration(false);
+
+            // Strip the outgoing class's talent auras but KEEP its rows (build banks for re-activation).
+            // Guarded like the spell/skill removals so talent-triggered spell removes are not re-attributed.
+            player->SetMulticlassInOrchestration(true);
+            player->BenchClassTalents(oldClassId);
+            player->SetMulticlassInOrchestration(false);
         }
 
         // Reconcile skills/gear/level/projection to the now-final active set and persist, then recompute the
@@ -450,6 +480,7 @@ namespace Multiclass
             player->MoveUnusableEquippedItemsToInventory();
             ReconcileDisplayLevel(player);
             player->SyncMulticlassProjection();   // slot-0 may have changed -> reproject getClass()
+            player->RecomputeProjectedTalentView(); // render the (possibly new) projected class's tree/points
             player->SaveMulticlassProfile();      // persist the new set (core-owned tables)
             SaveLedger(player);                   // persist the now-active classes' books
             // The active set (and thus the combined stat sheet) is now final. Recompute in place, preserving

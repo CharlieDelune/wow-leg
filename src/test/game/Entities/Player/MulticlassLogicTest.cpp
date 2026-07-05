@@ -282,3 +282,44 @@ TEST(MulticlassCombineValues, HighestPicksLeastNegativeNotAZeroFloor)
     // least-negative contribution, never clamp to 0.
     EXPECT_FLOAT_EQ(CombineValues(MULTICLASS_STATS_HIGHEST, { -8.0f, -3.0f }), -3.0f);
 }
+
+TEST(MulticlassLogicTest, TalentResetCost_openingTiersClimbCapDecayFloor)
+{
+    constexpr uint32 G = 10000;             // copper per gold (SharedDefines GOLD)
+    constexpr uint32 DAY_S = 86400;
+    constexpr uint32 P = 30 * DAY_S;        // native decay window
+
+    // Opening tiers key off the last cost paid, independent of elapsed time.
+    EXPECT_EQ(TalentResetCost(0 * G, 0, P), 1 * G);     // never reset -> 1g
+    EXPECT_EQ(TalentResetCost(1 * G, 0, P), 5 * G);     // last 1g   -> 5g
+    EXPECT_EQ(TalentResetCost(5 * G, 0, P), 10 * G);    // last 5g   -> 10g
+
+    // Past 10g with no full period elapsed: climb +5g.
+    EXPECT_EQ(TalentResetCost(10 * G, 0, P), 15 * G);
+    EXPECT_EQ(TalentResetCost(45 * G, 0, P), 50 * G);   // climb hits the cap
+    EXPECT_EQ(TalentResetCost(50 * G, 0, P), 50 * G);   // stays capped at 50g
+
+    // Decay by whole periods elapsed: 5g per period.
+    EXPECT_EQ(TalentResetCost(30 * G, 2 * P, P), 20 * G);   // 30g - 2*5g
+    EXPECT_EQ(TalentResetCost(15 * G, 10 * P, P), 10 * G);  // floored at 10g
+}
+
+TEST(MulticlassLogicTest, TalentResetCost_decayPeriodIsTunable)
+{
+    constexpr uint32 G = 10000;
+    constexpr uint32 DAY_S = 86400;
+
+    // 7 days elapsed: at the native 30-day window no period has passed -> climb.
+    EXPECT_EQ(TalentResetCost(30 * G, 7 * DAY_S, 30 * DAY_S), 35 * G);
+    // Same 7 days elapsed at a 7-day window -> exactly one decay step.
+    EXPECT_EQ(TalentResetCost(30 * G, 7 * DAY_S, 7 * DAY_S), 25 * G);
+}
+
+TEST(MulticlassLogicTest, ClassIdFromMask_decodesSingleClassBit)
+{
+    EXPECT_EQ(ClassIdFromMask(0u), 0u);                        // no class
+    EXPECT_EQ(ClassIdFromMask(1u << (1 - 1)), 1u);             // warrior
+    EXPECT_EQ(ClassIdFromMask(1u << (8 - 1)), 8u);             // mage
+    EXPECT_EQ(ClassIdFromMask(1u << (11 - 1)), 11u);           // druid
+    EXPECT_EQ(ClassIdFromMask((1u << (1 - 1)) | (1u << (8 - 1))), 1u);  // multi-bit -> lowest set
+}

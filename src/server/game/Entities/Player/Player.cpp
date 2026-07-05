@@ -60,6 +60,7 @@
 #include "MapMgr.h"
 #include "MiscPackets.h"
 #include "MulticlassClassPolicy.h"
+#include "MulticlassSpells.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "OutdoorPvP.h"
@@ -3127,6 +3128,96 @@ void Player::_addTalentAurasAndSpells(uint32 spellId)
     }
 }
 
+void Player::ActivateClassTalents(uint8 classId)
+{
+    if (classId == 0)
+        return;
+
+    // A class entering the active set: mark active-set membership (specMask bit 0) and apply each talent's
+    // auras/learned spells via the native primitive. addTalent/_LoadTalents already key aura apply off
+    // (specMask & GetActiveSpecMask()); this replays that for a class activated after login.
+    for (PlayerTalentMap::iterator itr = m_talents.begin(); itr != m_talents.end(); ++itr)
+    {
+        if (itr->second->State == PLAYERSPELL_REMOVED)
+            continue;
+        if (Multiclass::TalentOwnerClass(itr->first) != classId)
+            continue;
+
+        if (!(itr->second->specMask & GetActiveSpecMask()))
+        {
+            itr->second->specMask |= GetActiveSpecMask();
+            if (itr->second->State != PLAYERSPELL_NEW)
+                itr->second->State = PLAYERSPELL_CHANGED;
+            _addTalentAurasAndSpells(itr->first);
+        }
+    }
+}
+
+void Player::BenchClassTalents(uint8 classId)
+{
+    if (classId == 0)
+        return;
+
+    // A class leaving the active set: strip its talent auras but KEEP the character_talent rows so the
+    // build survives and restores on re-activation. Clear active-set membership (specMask bit 0) and force
+    // a persisting state (NEW stays NEW, else CHANGED) so the row upserts with specMask 0. Deliberately NOT
+    // _removeTalent, whose specMask==0 path marks the row REMOVED (which would DELETE the build).
+    for (PlayerTalentMap::iterator itr = m_talents.begin(); itr != m_talents.end(); ++itr)
+    {
+        if (itr->second->State == PLAYERSPELL_REMOVED)
+            continue;
+        if (Multiclass::TalentOwnerClass(itr->first) != classId)
+            continue;
+
+        if (itr->second->specMask & GetActiveSpecMask())
+        {
+            _removeTalentAurasAndSpells(itr->first);
+            itr->second->specMask &= ~GetActiveSpecMask();
+            if (itr->second->State != PLAYERSPELL_NEW)
+                itr->second->State = PLAYERSPELL_CHANGED;
+        }
+    }
+}
+
+void Player::ReconcileMulticlassTalents()
+{
+    // _LoadTalents already applied auras for talents persisted with active-set membership (specMask bit 0).
+    // But _LoadMulticlassProfile::Load can bench (or rescue) a class via the offline slot-capacity trim,
+    // so persisted membership may disagree with the CURRENT active set. Reconcile to the truth: desired
+    // bit 0 == (owning class active now). Fix mismatches -- apply/remove auras and flip the bit -- always
+    // KEEPING rows (benched builds survive). Then render the projected view. Same profile-before-apply
+    // discipline the P2b base-stat fix required. Guarded so talent-triggered spell moves are not attributed.
+    SetMulticlassInOrchestration(true);
+    for (PlayerTalentMap::iterator itr = m_talents.begin(); itr != m_talents.end(); ++itr)
+    {
+        if (itr->second->State == PLAYERSPELL_REMOVED)
+            continue;
+
+        uint8 const ownerClass = Multiclass::TalentOwnerClass(itr->first);
+        bool const desiredActive   = ownerClass != 0 && GetMulticlassProfile().HasActiveClass(ownerClass);
+        bool const persistedActive = (itr->second->specMask & GetActiveSpecMask()) != 0;
+
+        if (desiredActive == persistedActive)
+            continue;
+
+        if (desiredActive)
+        {
+            itr->second->specMask |= GetActiveSpecMask();
+            _addTalentAurasAndSpells(itr->first);
+        }
+        else
+        {
+            _removeTalentAurasAndSpells(itr->first);
+            itr->second->specMask &= ~GetActiveSpecMask();
+        }
+        if (itr->second->State != PLAYERSPELL_NEW)
+            itr->second->State = PLAYERSPELL_CHANGED;
+    }
+    SetMulticlassInOrchestration(false);
+
+    RecomputeProjectedTalentView();
+}
+
 void Player::SendLearnPacket(uint32 spellId, bool learn)
 {
     if (learn)
@@ -3799,39 +3890,25 @@ void Player::_SaveSpellCooldowns(CharacterDatabaseTransaction trans, bool logout
 
 uint32 Player::resetTalentsCost() const
 {
-    // The first time reset costs 1 gold
-    if (m_resetTalentsCost < 1 * GOLD)
-        return 1 * GOLD;
-    // then 5 gold
-    else if (m_resetTalentsCost < 5 * GOLD)
-        return 5 * GOLD;
-    // After that it increases in increments of 5 gold
-    else if (m_resetTalentsCost < 10 * GOLD)
-        return 10 * GOLD;
-    else
-    {
-        uint64 months = (GameTime::GetGameTime().count() - m_resetTalentsTime) / MONTH;
-        if (months > 0)
-        {
-            // This cost will be reduced by a rate of 5 gold per month
-            int32 new_cost = int32(m_resetTalentsCost - 5 * GOLD * months);
-            // to a minimum of 10 gold.
-            return (new_cost < 10 * GOLD ? 10 * GOLD : new_cost);
-        }
-        else
-        {
-            // After that it increases in increments of 5 gold
-            int32 new_cost = m_resetTalentsCost + 5 * GOLD;
-            // until it hits a cap of 50 gold.
-            if (new_cost > 50 * GOLD)
-                new_cost = 50 * GOLD;
-            return new_cost;
-        }
-    }
+    uint32 const decayPeriod = sWorld->getIntConfig(CONFIG_TALENTS_RESET_DECAY_DAYS) * DAY;
+    uint32 const sinceReset  = uint32(GameTime::GetGameTime().count() - m_resetTalentsTime);
+    return Multiclass::TalentResetCost(m_resetTalentsCost, sinceReset, decayPeriod);
 }
 
 bool Player::resetTalents(bool noResetCost)
 {
+    // Multiclass: the stock wipe opcode, the at-login reset flag, and InitTalentForLevel's overspend guard
+    // all funnel through here. Route them to the projected class's per-class reset (projection-agnostic
+    // underneath) so the native "remove every talent with specMask & GetActiveSpecMask()" -- which under
+    // P3a would wipe EVERY active class's talents at once -- never fires. Other active classes' builds
+    // stay intact (P3a: the stock client can only wipe the shown tree). Unmanaged -> native path below.
+    if (IsMulticlassManaged())
+    {
+        uint8 const projected = GetMulticlassProfile().GetProjectedClass();
+        if (projected != 0)
+            return ResetClassTalents(projected, noResetCost);
+    }
+
     sScriptMgr->OnPlayerTalentsReset(this, noResetCost);
 
     // xinef: remove at login flag upon talents reset
@@ -3920,6 +3997,114 @@ bool Player::resetTalents(bool noResetCost)
 
         m_resetTalentsCost = resetCost;
         m_resetTalentsTime = GameTime::GetGameTime().count();
+    }
+
+    return true;
+}
+
+uint32 Player::ResetClassTalentsCost(uint8 classId) const
+{
+    // Per-class reset ladder cost for classId (§4.3). The single source of truth for both the charge
+    // (ResetClassTalents) and the confirm dialog (SendTalentWipeConfirm). lastTime == 0 (never reset) is
+    // treated as one full decay period elapsed, so a first reset never spuriously decays.
+    uint32 const decayPeriod = sWorld->getIntConfig(CONFIG_TALENTS_RESET_DECAY_DAYS) * DAY;
+    uint32 const lastCost = GetMulticlassProfile().GetTalentResetCost(classId);
+    uint32 const lastTime = GetMulticlassProfile().GetTalentResetTime(classId);
+    uint32 const sinceReset = lastTime ? uint32(GameTime::GetGameTime().count() - lastTime) : decayPeriod;
+    return Multiclass::TalentResetCost(lastCost, sinceReset, decayPeriod);
+}
+
+bool Player::ResetClassTalents(uint8 classId, bool noResetCost /*= false*/)
+{
+    // Any OWNED class can be reset -- active or benched, in slot 0 or not (a class trainer resets its own
+    // class regardless of the projection). A benched class has no live auras/spells to strip, so the removal
+    // loop's _removeTalentAurasAndSpells calls are idempotent no-ops and only the banked rows are cleared;
+    // SpentTalentPointsForClass counts benched rows too, so its refund/ladder still apply.
+    if (classId == 0 || !GetMulticlassProfile().HasOwnedClass(classId))
+        return false;
+
+    sScriptMgr->OnPlayerTalentsReset(this, noResetCost);
+
+    if (HasAtLoginFlag(AT_LOGIN_RESET_TALENTS))
+        RemoveAtLoginFlag(AT_LOGIN_RESET_TALENTS, true);
+
+    // Nothing invested in this class -> nothing to refund or charge.
+    uint32 const spent = SpentTalentPointsForClass(classId);
+    if (spent == 0)
+        return false;
+
+    // Per-class reset ladder (§4.3). lastTime == 0 (never reset) -> treat as one full period elapsed so a
+    // first reset never spuriously decays.
+    uint32 resetCost = 0;
+    if (!noResetCost && !sWorld->getBoolConfig(CONFIG_NO_RESET_TALENT_COST))
+    {
+        resetCost = ResetClassTalentsCost(classId);   // per-class ladder; SAME value SendTalentWipeConfirm showed
+        if (!HasEnoughMoney(resetCost))
+        {
+            SendBuyError(BUY_ERR_NOT_ENOUGHT_MONEY, 0, 0, 0);
+            return false;
+        }
+    }
+
+    RemovePet(nullptr, PET_SAVE_NOT_IN_SLOT, true);
+
+    // Remove exactly this class's talents (owning class from TalentTab.ClassMask), truly removed so the
+    // points are refunded. Filtered by owning class -- NOT by active spec -- so every OTHER class's build
+    // is untouched. _removeTalent with SPEC_MASK_ALL clears all spec bits -> the row is marked REMOVED and
+    // deleted by _SaveTalents (this is a real reset, unlike benching which keeps the row).
+    for (PlayerTalentMap::iterator iter = m_talents.begin(); iter != m_talents.end(); )
+    {
+        PlayerTalentMap::iterator itr = iter++;
+
+        if (itr->second->State == PLAYERSPELL_REMOVED)
+            continue;
+        if (Multiclass::TalentOwnerClass(itr->first) != classId)
+            continue;
+
+        _removeTalentAurasAndSpells(itr->first);
+
+        TalentEntry const* talentInfo = sTalentStore.LookupEntry(itr->second->talentID);
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(itr->first);
+
+        bool removed = false;
+        if (talentInfo->addToSpellBook)
+            if (!spellInfo->HasAttribute(SPELL_ATTR0_PASSIVE) && !spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL))
+            {
+                removeSpell(itr->first, SPEC_MASK_ALL, false);
+                removed = true;
+            }
+
+        if (!removed)
+            SendLearnPacket(itr->first, false);
+
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            if (spellInfo->Effects[i].Effect == SPELL_EFFECT_LEARN_SPELL)
+                if (sSpellMgr->IsAdditionalTalentSpell(spellInfo->Effects[i].TriggerSpell))
+                    removeSpell(spellInfo->Effects[i].TriggerSpell, SPEC_MASK_ALL, false);
+
+        _removeTalent(itr, SPEC_MASK_ALL);
+    }
+
+    if (m_canTitanGrip)
+        SetCanTitanGrip(false);
+    if (!HasSpell(674) && CanDualWield())
+        SetCanDualWield(false);
+
+    AutoUnequipOffhandIfNeed();
+
+    // Refund: recompute the projected view (free points + packet) from the now-smaller model.
+    RecomputeProjectedTalentView();
+
+    if (!noResetCost)
+    {
+        ModifyMoney(-(int32)resetCost);
+        UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_GOLD_SPENT_FOR_TALENTS, resetCost);
+        UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_NUMBER_OF_TALENT_RESETS, 1);
+
+        // Advance ONLY this class's ladder (resetCost == 0 when NoResetTalentsCost is on -> native-style
+        // ladder reset to 0). Persist immediately so the escalation survives a crash before the next save.
+        GetMulticlassProfile().SetTalentResetLadder(classId, resetCost, uint32(GameTime::GetGameTime().count()));
+        SaveMulticlassProfile();
     }
 
     return true;
@@ -9103,7 +9288,26 @@ void Player::SendTalentWipeConfirm(ObjectGuid guid)
 {
     WorldPacket data(MSG_TALENT_WIPE_CONFIRM, (8 + 4));
     data << guid;
-    uint32 cost = sWorld->getBoolConfig(CONFIG_NO_RESET_TALENT_COST) ? 0 : resetTalentsCost();
+    uint32 cost = 0;
+    if (!sWorld->getBoolConfig(CONFIG_NO_RESET_TALENT_COST))
+    {
+        // Multiclass: the wipe charges the per-class ladder of the class being reset, so the confirm dialog
+        // must show that SAME per-class cost -- NOT the native char-level resetTalentsCost() (which a managed
+        // character never advances, so it would read a stale ~1g while the real charge escalates). The class
+        // being reset is the one THIS trainer trains (GetTrainerClass); only a non-trainer entry (e.g. the
+        // spell-triggered wipe) falls back to the projected class. Unmanaged -> native cost, byte-vanilla.
+        if (IsMulticlassManaged())
+        {
+            uint8 target = GetMulticlassProfile().GetProjectedClass();
+            if (Creature* npc = GetNPCIfCanInteractWith(guid, UNIT_NPC_FLAG_TRAINER))
+                if (uint8 const trainerClass = npc->GetTrainerClass())
+                    target = trainerClass;
+
+            cost = ResetClassTalentsCost(target);
+        }
+        else
+            cost = resetTalentsCost();
+    }
     data << cost;
     SendDirectMessage(&data);
 }
@@ -14099,18 +14303,62 @@ LootItem* Player::StoreLootItem(uint8 lootSlot, Loot* loot, InventoryResult& msg
     return item;
 }
 
+uint32 Player::SpentTalentPointsForClass(uint8 classId) const
+{
+    if (classId == 0)
+        return 0;
+
+    // Model property of the class: sum rank+1 over its non-removed learned talents, regardless of active
+    // membership (a benched class still has a spent count). Mirrors LearnTalent's per-tree tier sum but
+    // filtered to the owning class rather than a single tab.
+    uint32 spent = 0;
+    for (PlayerTalentMap::const_iterator itr = m_talents.begin(); itr != m_talents.end(); ++itr)
+    {
+        if (itr->second->State == PLAYERSPELL_REMOVED)
+            continue;
+        if (Multiclass::TalentOwnerClass(itr->first) != classId)
+            continue;
+        if (TalentSpellPos const* talentPos = GetTalentSpellPos(itr->first))
+            spent += talentPos->rank + 1;
+    }
+    return spent;
+}
+
+void Player::RecomputeProjectedTalentView()
+{
+    // Render the per-class model onto the stock client's single-class view: m_usedTalentCount becomes the
+    // projected class's spent count, then InitTalentForLevel sets PLAYER_CHARACTER_POINTS1 = projectedPool
+    // - projectedSpent and (when not loading) resends SMSG_TALENTS_INFO. Unmanaged -> projected == 0 ->
+    // falls back to getClass(), so a normal character's used/free counts are byte-vanilla.
+    uint8 const projected = GetMulticlassProfile().GetProjectedClass();
+    m_usedTalentCount = SpentTalentPointsForClass(projected != 0 ? projected : getClass());
+    InitTalentForLevel();
+}
+
 uint32 Player::CalculateTalentsPoints() const
 {
-    uint32 base_talent = GetLevel() < 10 ? 0 : GetLevel() - 9;
+    // Pool is driven by the PROJECTED class's OWN level (P3a per-class model). When multiclass is
+    // unmanaged (feature off, or no active class) fall back to getClass()/GetLevel() so a normal
+    // character is byte-vanilla; a single active class has GetClassLevel(projected) == GetLevel(), so
+    // the single-class case reduces to vanilla too.
+    uint8 const projectedClass = GetMulticlassProfile().GetProjectedClass();
+    uint8 const effectiveClass = projectedClass != 0 ? projectedClass : getClass();
+    uint8 const poolLevel      = projectedClass != 0 ? GetMulticlassProfile().GetClassLevel(projectedClass)
+                                                     : GetLevel();
+
+    uint32 const base_talent = Multiclass::TalentPointsForLevel(poolLevel);
 
     uint32 talentPointsForLevel = 0;
-    if (!IsClass(CLASS_DEATH_KNIGHT, CLASS_CONTEXT_TALENT_POINT_CALC) || GetMapId() != MAP_EBON_HOLD)
+    // DK Ebon Hold special-case keyed DIRECTLY on the class being the Death Knight (projection-agnostic),
+    // NOT the projected-only CLASS_CONTEXT_TALENT_POINT_CALC policy -- so a DK's starting-quest grant is
+    // preserved whether or not the DK is projected, and a disabled/single-class DK stays byte-vanilla.
+    if (effectiveClass != CLASS_DEATH_KNIGHT || GetMapId() != MAP_EBON_HOLD)
     {
         talentPointsForLevel = base_talent;
     }
     else
     {
-        talentPointsForLevel = GetLevel() < 56 ? 0 : GetLevel() - 55;
+        talentPointsForLevel = poolLevel < 56 ? 0 : poolLevel - 55;
         talentPointsForLevel += m_questRewardTalentCount;
 
         if (talentPointsForLevel > base_talent)
@@ -14464,6 +14712,18 @@ void Player::LearnTalent(uint32 talentId, uint32 talentRank, bool command /*= fa
     // xinef: prevent learn talent for different class (cheating)
     if ((getClassMask() & talentTabInfo->ClassMask) == 0)
         return;
+
+    // Multiclass: the tab gate above (getClassMask) admits ANY active class; additionally require the
+    // talent's OWNING class (TalentTab.ClassMask) be currently ACTIVE, so a benched class's tree cannot be
+    // edited. The free-point check + deduction below use PLAYER_CHARACTER_POINTS1, which is kept equal to
+    // the projected class's free pool -- and in P3a the stock client can only send talents from the shown
+    // (projected) tree, so the owning class is the projected class. Unmanaged -> guard is skipped.
+    if (sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE) && GetMulticlassProfile().GetProjectedClass() != 0)
+    {
+        uint8 const ownerClass = Multiclass::ClassIdFromMask(talentTabInfo->ClassMask);
+        if (ownerClass != 0 && !GetMulticlassProfile().HasActiveClass(ownerClass))
+            return;
+    }
 
     // xinef: find current talent rank
     uint32 currentTalentRank = 0;
@@ -14907,6 +15167,12 @@ void Player::BuildPlayerTalentsInfoData(WorldPacket* data)
     if (m_specsCount > MAX_TALENT_SPECS)
         m_specsCount = MAX_TALENT_SPECS;
 
+    // Multiclass: the stock client renders ONE class's three tabs. Emit only the PROJECTED class's talents
+    // so a benched or other-active class's talents are never painted onto the shown frame. Unmanaged ->
+    // projected == 0 -> viewClass == getClass(), and every learned talent belongs to it -> byte-vanilla.
+    uint8 const projected = GetMulticlassProfile().GetProjectedClass();
+    uint8 const viewClass = projected != 0 ? projected : getClass();
+
     for (uint32 specIdx = 0; specIdx < m_specsCount; ++specIdx)
     {
         uint8 talentIdCount = 0;
@@ -14917,11 +15183,12 @@ void Player::BuildPlayerTalentsInfoData(WorldPacket* data)
         for (PlayerTalentMap::const_iterator itr = talentMap.begin(); itr != talentMap.end(); ++itr)
             if (TalentSpellPos const* talentPos = GetTalentSpellPos(itr->first))
                 if (itr->second->State != PLAYERSPELL_REMOVED && itr->second->IsInSpec(specIdx)) // pussywizard
-                {
-                    *data << uint32(talentPos->talent_id);  // Talent.dbc
-                    *data << uint8(talentPos->rank);        // talentMaxRank (0-4)
-                    ++talentIdCount;
-                }
+                    if (Multiclass::TalentOwnerClass(itr->first) == viewClass)
+                    {
+                        *data << uint32(talentPos->talent_id);  // Talent.dbc
+                        *data << uint8(talentPos->rank);        // talentMaxRank (0-4)
+                        ++talentIdCount;
+                    }
 
         data->put<uint8>(pos, talentIdCount);               // put real count
 

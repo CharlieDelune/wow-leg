@@ -45,6 +45,11 @@ namespace Multiclass
     // expression). Talent spells are out of scope for the spell ledger until the
     // talent plan; ledgering them would desync spellbook vs talent map on swap-out.
     bool IsTalentSpell(uint32 spellId);
+
+    // The class that OWNS a talent spell, derived from its TalentTab.ClassMask (sTalentTabStore) --
+    // projection-agnostic, never the projected/render class. 0 if spellId is not a talent or the tab
+    // has no class. This is the per-class talent model's keystone lookup.
+    uint8 TalentOwnerClass(uint32 spellId);
 }
 
 #endif

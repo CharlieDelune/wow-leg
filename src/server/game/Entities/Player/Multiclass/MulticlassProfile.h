@@ -34,6 +34,8 @@ public:
         uint8 classId = 0;   // 1..11 (10 unused); 0 == invalid/empty
         uint8 level   = 1;
         uint32 xp     = 0;
+        uint32 talentResetCost = 0;   // last talent-reset cost paid for this class (copper); 0 == never reset
+        uint32 talentResetTime = 0;   // unixtime of this class's last talent reset; 0 == never reset
     };
 
     // classIds follow WoW: 1..11 with 10 unused (CLASS_NONE == 0).
@@ -60,11 +62,12 @@ public:
         return out;
     }
 
-    bool AddOwnedClass(uint8 classId, uint8 level = 1, uint32 xp = 0)
+    bool AddOwnedClass(uint8 classId, uint8 level = 1, uint32 xp = 0, uint32 talentResetCost = 0,
+        uint32 talentResetTime = 0)
     {
         if (!IsValidClassId(classId) || HasOwnedClass(classId))
             return false;
-        _pool.push_back(ClassProgress{ classId, level, xp });
+        _pool.push_back(ClassProgress{ classId, level, xp, talentResetCost, talentResetTime });
         return true;
     }
 
@@ -151,7 +154,7 @@ public:
         _slots.clear();
         _active.clear();
         for (ClassProgress const& cp : pool)
-            AddOwnedClass(cp.classId, cp.level, cp.xp);
+            AddOwnedClass(cp.classId, cp.level, cp.xp, cp.talentResetCost, cp.talentResetTime);
         for (std::size_t i = 0; i < positionalSlots.size() && i < _maxActive; ++i)
         {
             uint8 const classId = positionalSlots[i];
@@ -202,6 +205,31 @@ public:
     {
         ClassProgress const* cp = FindOwned(classId);
         return cp ? cp->xp : 0u;
+    }
+
+    [[nodiscard]] uint32 GetTalentResetCost(uint8 classId) const
+    {
+        ClassProgress const* cp = FindOwned(classId);
+        return cp ? cp->talentResetCost : 0u;
+    }
+
+    [[nodiscard]] uint32 GetTalentResetTime(uint8 classId) const
+    {
+        ClassProgress const* cp = FindOwned(classId);
+        return cp ? cp->talentResetTime : 0u;
+    }
+
+    // Set (or advance) a class's reset ladder. The loader passes the persisted pair; a completed reset
+    // passes Multiclass::TalentResetCost(...) and the current time. Pure storage -> no config/time here,
+    // keeping the profile unit-testable. False if the class is not owned.
+    bool SetTalentResetLadder(uint8 classId, uint32 cost, uint32 time)
+    {
+        ClassProgress* cp = FindOwned(classId);
+        if (!cp)
+            return false;
+        cp->talentResetCost = cost;
+        cp->talentResetTime = time;
+        return true;
     }
 
     [[nodiscard]] uint8 GetMinActiveLevel() const

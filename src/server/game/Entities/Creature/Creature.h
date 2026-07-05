@@ -105,6 +105,9 @@ public:
     ///// @todo RENAME THIS!!!!!
     bool isCanInteractWithBattleMaster(Player* player, bool msg) const;
     bool CanResetTalents(Player* player) const;
+    // Multiclass: the class a Type::Class trainer trains (its requirement IS the class id), else 0.
+    // Lets the talent-wipe path reset THAT class's talents rather than the projected/slot-0 class.
+    [[nodiscard]] uint8 GetTrainerClass() const;
     bool CanCreatureAttack(Unit const* victim, bool skipDistCheck = false) const;
     bool IsImmunedToSpell(SpellInfo const* spellInfo, Spell const* spell = nullptr) override;
 

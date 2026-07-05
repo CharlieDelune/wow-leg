@@ -1290,6 +1290,15 @@ bool Creature::CanResetTalents(Player* player) const
     return player->GetLevel() >= 10 && trainer->IsTrainerValidForPlayer(player);
 }
 
+uint8 Creature::GetTrainerClass() const
+{
+    Trainer::Trainer const* trainer = sObjectMgr->GetTrainer(GetEntry());
+    if (trainer && trainer->GetTrainerType() == Trainer::Type::Class)
+        return uint8(trainer->GetTrainerRequirement());   // requirement of a class trainer IS the class id
+
+    return 0;
+}
+
 Player* Creature::GetLootRecipient() const
 {
     if (!m_lootRecipient)

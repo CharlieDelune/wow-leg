@@ -19,6 +19,9 @@
 #include "CommandScript.h"
 #include "MulticlassEngine.h"
 #include "Player.h"
+#include "SpellDefines.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "World.h"
 
 using namespace Acore::ChatCommands;
@@ -37,7 +40,10 @@ public:
             { "unsetslot",   HandleUnsetSlot,   SEC_GAMEMASTER, Console::No },
             { "setlevel",    HandleSetLevel,    SEC_GAMEMASTER, Console::No },
             { "unlockclass", HandleUnlockClass, SEC_GAMEMASTER, Console::No },
-            { "setcapacity", HandleSetCapacity, SEC_GAMEMASTER, Console::No }
+            { "setcapacity", HandleSetCapacity, SEC_GAMEMASTER, Console::No },
+            { "talents",      HandleTalents,      SEC_GAMEMASTER, Console::No },
+            { "spellcheck",   HandleSpellCheck,   SEC_GAMEMASTER, Console::No },
+            { "resettalents", HandleResetTalents, SEC_GAMEMASTER, Console::No }
         };
 
         static ChatCommandTable commandTable =
@@ -240,6 +246,132 @@ public:
         MulticlassProfile const& mc = player->GetMulticlassProfile();
         handler->PSendSysMessage("Earned slots set to {} (effective cap {} after the server ceiling).",
             uint32(mc.GetUnlockedSlots()), uint32(mc.GetMaxActiveClasses()));
+        return true;
+    }
+
+    // Server-side ground truth for the per-class talent MODEL, independent of the stock client's display:
+    // per owned class the pool (Multiclass::TalentPointsForLevel), the spent count (SpentTalentPointsForClass),
+    // and free = pool - spent, plus active/benched. The projected class's numbers should match the client's
+    // single-class free-point register (shown in the header) -- a quick view/model consistency check.
+    static bool HandleTalents(ChatHandler* handler)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+
+        if (!sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
+        {
+            handler->SendErrorMessage("Multiclass is disabled.");
+            return true;
+        }
+
+        MulticlassProfile const& mc = player->GetMulticlassProfile();
+        handler->PSendSysMessage("Talent state: display class {}, projected class {}, client free points {}.",
+            uint32(player->getClass()), uint32(mc.GetProjectedClass()), player->GetFreeTalentPoints());
+
+        for (uint8 classId : mc.GetOwnedClasses())
+        {
+            uint8 const level = mc.GetClassLevel(classId);
+            uint32 const pool = Multiclass::TalentPointsForLevel(level);
+            uint32 const spent = player->SpentTalentPointsForClass(classId);
+            uint32 const freePts = pool > spent ? pool - spent : 0u;
+            handler->PSendSysMessage("  class {} L{} {}: spent {}/{} pool (free {})",
+                uint32(classId), uint32(level), mc.HasActiveClass(classId) ? "ACTIVE" : "BENCHED",
+                spent, pool, freePts);
+        }
+
+        return true;
+    }
+
+    // The cast-time/cooldown/mana probe the stock client only renders as generic bars. Reports the server's
+    // ENFORCED values for a spell -- base (raw SpellInfo) vs effective (after the player's live talent SpellMods
+    // + haste), computed via the same functions the server runs on cast (ModSpellCastTime, ApplySpellMod,
+    // CalcPowerCost) so a non-zero delta means the talent is functionally applied. Read-only: ApplySpellMod with
+    // a null Spell* drops no mod charges (Player::ApplyModToSpell no-ops on null).
+    static bool HandleSpellCheck(ChatHandler* handler, uint32 spellId)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+        if (!spellInfo)
+        {
+            handler->SendErrorMessage("Unknown spell {}.", spellId);
+            return true;
+        }
+
+        // Cast time: raw (level-scaled, no mods) vs effective (haste + talent SPELLMOD_CASTING_TIME), matching
+        // Unit::ModSpellCastTime -- the value the server actually enforces on cast.
+        int32 const castBase = int32(spellInfo->CalcCastTime(player));
+        int32 castEff = castBase;
+        player->ModSpellCastTime(spellInfo, castEff);
+
+        // Global cooldown: base vs effective, mirroring Spell::TriggerGlobalCooldown (its MIN_GCD/MAX_GCD enum
+        // is file-local to Spell.cpp: 1000/1500 ms).
+        constexpr int32 kMinGcd = 1000;
+        constexpr int32 kMaxGcd = 1500;
+        int32 const gcdBase = int32(spellInfo->StartRecoveryTime);
+        int32 gcdEff = gcdBase;
+        if (gcdBase >= kMinGcd && gcdBase <= kMaxGcd)
+        {
+            player->ApplySpellMod(spellInfo->Id, SPELLMOD_GLOBAL_COOLDOWN, gcdEff);
+            if (spellInfo->StartRecoveryCategory == 133 && spellInfo->StartRecoveryTime == 1500 &&
+                spellInfo->DmgClass != SPELL_DAMAGE_CLASS_MELEE && spellInfo->DmgClass != SPELL_DAMAGE_CLASS_RANGED &&
+                !spellInfo->HasAttribute(SPELL_ATTR0_USES_RANGED_SLOT) &&
+                !spellInfo->HasAttribute(SPELL_ATTR0_IS_ABILITY))
+                gcdEff = int32(float(gcdEff) * player->GetFloatValue(UNIT_MOD_CAST_SPEED));
+
+            if (gcdEff < kMinGcd)
+                gcdEff = kMinGcd;
+            else if (gcdEff > kMaxGcd)
+                gcdEff = kMaxGcd;
+        }
+
+        // Cooldown: base recovery vs talent SPELLMOD_COOLDOWN-adjusted.
+        int32 const cdBase = int32(spellInfo->RecoveryTime);
+        int32 cdEff = cdBase;
+        player->ApplySpellMod(spellInfo->Id, SPELLMOD_COOLDOWN, cdEff);
+
+        // Power/mana cost: raw ManaCost field vs effective CalcPowerCost, which folds in talent SPELLMOD_COST.
+        int32 const costBase = int32(spellInfo->ManaCost);
+        int32 const costEff = spellInfo->CalcPowerCost(player, spellInfo->GetSchoolMask());
+
+        handler->PSendSysMessage("Spell {} effective values for {}:", spellId, player->GetName());
+        handler->PSendSysMessage("  cast:     {} -> {} ms (delta {})", castBase, castEff, castEff - castBase);
+        handler->PSendSysMessage("  gcd:      {} -> {} ms", gcdBase, gcdEff);
+        handler->PSendSysMessage("  cooldown: {} -> {} ms (delta {})", cdBase, cdEff, cdEff - cdBase);
+        handler->PSendSysMessage("  cost:     {} -> {} (delta {})", costBase, costEff, costEff - costBase);
+        return true;
+    }
+
+    // Reset a specific owned class's talents (active or benched, in slot 0 or not) -- the client-independent
+    // entry to the per-class reset primitive P4's per-class reset UI will call. Free and ladder-neutral
+    // (noResetCost): this is a testing/admin lever, so it neither charges gold nor advances the class's
+    // reset-cost ladder; exercise the escalating cost ladder through a class trainer instead.
+    static bool HandleResetTalents(ChatHandler* handler, uint8 classId)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+
+        if (!sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
+        {
+            handler->SendErrorMessage("Multiclass is disabled.");
+            return true;
+        }
+
+        if (!player->GetMulticlassProfile().HasOwnedClass(classId))
+        {
+            handler->SendErrorMessage("You do not own class {}.", uint32(classId));
+            return true;
+        }
+
+        if (player->ResetClassTalents(classId, /*noResetCost*/ true))
+            handler->PSendSysMessage("Reset talents for class {} (free, ladder unchanged).", uint32(classId));
+        else
+            handler->PSendSysMessage("Class {} had no talents to reset.", uint32(classId));
+
         return true;
     }
 };

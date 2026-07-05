@@ -383,3 +383,33 @@ TEST(MulticlassProfile, MinLevelQueries_selectLowestActiveClasses)
     EXPECT_EQ(empty.GetMinActiveLevel(), 0u);
     EXPECT_TRUE(empty.GetActiveClassesAtMinLevel().empty());
 }
+
+TEST(MulticlassProfile, TalentResetLadder_defaultsZeroAndRoundTrips)
+{
+    MulticlassProfile p;
+    p.AddOwnedClass(8, 20, 0);                       // Mage, no ladder args -> defaults
+    EXPECT_EQ(p.GetTalentResetCost(8), 0u);
+    EXPECT_EQ(p.GetTalentResetTime(8), 0u);
+
+    EXPECT_TRUE(p.SetTalentResetLadder(8, 150000u, 1720000000u));
+    EXPECT_EQ(p.GetTalentResetCost(8), 150000u);
+    EXPECT_EQ(p.GetTalentResetTime(8), 1720000000u);
+
+    EXPECT_FALSE(p.SetTalentResetLadder(4, 1u, 1u));  // rogue not owned
+    EXPECT_EQ(p.GetTalentResetCost(4), 0u);           // unowned -> 0
+    EXPECT_EQ(p.GetTalentResetTime(4), 0u);
+}
+
+TEST(MulticlassProfile, Load_carriesPerClassResetLadder)
+{
+    MulticlassProfile p;
+    std::vector<MulticlassProfile::ClassProgress> pool;
+    MulticlassProfile::ClassProgress warrior;
+    warrior.classId = 1; warrior.level = 40; warrior.xp = 0;
+    warrior.talentResetCost = 300000u; warrior.talentResetTime = 1719000000u;
+    pool.push_back(warrior);
+    p.Load(pool, std::vector<uint8>{ 1 });
+
+    EXPECT_EQ(p.GetTalentResetCost(1), 300000u);
+    EXPECT_EQ(p.GetTalentResetTime(1), 1719000000u);
+}

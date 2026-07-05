@@ -53,6 +53,19 @@ namespace Multiclass
         return classId >= 1 && classId <= 11 && classId != 10;
     }
 
+    // The classId (1..11) encoded by a class mask, or 0 if none. Talent tabs and SkillLineAbility rows
+    // carry a single-class mask; this decodes it without a DBC read (pure -> unit-testable). Multi-bit
+    // masks resolve to the lowest set classId, which suffices for the single-bit talent-tab case.
+    inline uint8 ClassIdFromMask(uint32 classMask)
+    {
+        if (classMask == 0)
+            return 0;
+        for (uint8 classId = 1; classId <= 11; ++classId)
+            if (classMask & (1u << (classId - 1)))
+                return classId;
+        return 0;
+    }
+
     inline uint8 ActiveCount(SlotArray const& slots)
     {
         uint8 count = 0;
@@ -156,6 +169,35 @@ namespace Multiclass
     inline uint32 TalentPointsForLevel(uint8 level)
     {
         return level < 10 ? 0u : static_cast<uint32>(level - 9);
+    }
+
+    // Native talent-reset cost ladder, extracted pure for unit testing and reuse by the per-class ladder.
+    // `lastCostCopper` is the last cost paid (0 == never reset), `secondsSinceReset` is (now - lastReset),
+    // `decayPeriodSeconds` is the tunable decay window (native == 30 days). Mirrors retail exactly: opening
+    // tiers 1g -> 5g -> 10g, then +5g per reset up to a 50g cap, decaying 5g per full decay-period elapsed
+    // down to a 10g floor. At decayPeriodSeconds == 30*DAY this is byte-identical to native resetTalentsCost.
+    inline uint32 TalentResetCost(uint32 lastCostCopper, uint32 secondsSinceReset, uint32 decayPeriodSeconds)
+    {
+        constexpr uint32 GOLD_COPPER = 10000;   // == SharedDefines.h GOLD (SILVER*100); kept local so this
+                                                // pure header needs no game include and stays unit-testable.
+        if (lastCostCopper < 1 * GOLD_COPPER)
+            return 1 * GOLD_COPPER;
+        if (lastCostCopper < 5 * GOLD_COPPER)
+            return 5 * GOLD_COPPER;
+        if (lastCostCopper < 10 * GOLD_COPPER)
+            return 10 * GOLD_COPPER;
+
+        uint32 const periods = decayPeriodSeconds ? (secondsSinceReset / decayPeriodSeconds) : 0u;
+        if (periods > 0)
+        {
+            int32 const decayed = int32(lastCostCopper) - int32(5 * GOLD_COPPER) * int32(periods);
+            return decayed < int32(10 * GOLD_COPPER) ? 10 * GOLD_COPPER : uint32(decayed);
+        }
+
+        uint32 climbed = lastCostCopper + 5 * GOLD_COPPER;
+        if (climbed > 50 * GOLD_COPPER)
+            climbed = 50 * GOLD_COPPER;
+        return climbed;
     }
 
     inline bool CanAssignClass(SlotArray const& slots, uint8 slot, uint8 classId)

@@ -559,6 +559,7 @@ void WorldConfig::BuildConfigCache()
     SetConfigValue<uint32>(CONFIG_PVP_TOKEN_COUNT, "PvPToken.ItemCount", 1, ConfigValueCache::Reloadable::Yes, [](uint32 const& value) { return value > 0; }, "> 0");
 
     SetConfigValue<bool>(CONFIG_NO_RESET_TALENT_COST, "NoResetTalentsCost", false);
+    SetConfigValue<uint32>(CONFIG_TALENTS_RESET_DECAY_DAYS, "TalentsResetDecayDays", 30, ConfigValueCache::Reloadable::Yes, [](uint32 const& value) { return value >= 1; }, ">= 1");
     SetConfigValue<uint32>(CONFIG_TOGGLE_XP_COST, "ToggleXP.Cost", 100000);
     SetConfigValue<bool>(CONFIG_SHOW_KICK_IN_WORLD, "ShowKickInWorld", false);
     SetConfigValue<bool>(CONFIG_SHOW_MUTE_IN_WORLD, "ShowMuteInWorld", false);

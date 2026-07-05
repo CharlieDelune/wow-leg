@@ -1767,6 +1767,13 @@ public:
     [[nodiscard]] uint32 GetFreeTalentPoints() const { return GetUInt32Value(PLAYER_CHARACTER_POINTS1); }
     void SetFreeTalentPoints(uint32 points);
     bool resetTalents(bool noResetCost = false);
+    // Reset ONE class's talents (owning class == classId; truly removed, points refunded). Advances and
+    // charges that class's per-class reset ladder. The stock wipe opcode routes here with the projected
+    // class; P4 drives it per class. Every other class's build stays intact.
+    bool ResetClassTalents(uint8 classId, bool noResetCost = false);
+    // Per-class reset ladder cost for classId; shared by the charge (ResetClassTalents) and the confirm
+    // dialog (SendTalentWipeConfirm) so the shown cost always equals the charged cost.
+    [[nodiscard]] uint32 ResetClassTalentsCost(uint8 classId) const;
     [[nodiscard]] uint32 resetTalentsCost() const;
     bool IsMaxLevel() const;
     void InitTalentForLevel();
@@ -1788,6 +1795,20 @@ public:
     uint32 GetBonusTalentCount() { return m_extraBonusTalentCount; };
     void AddBonusTalent(uint32 count) { m_extraBonusTalentCount += count; };
     void RemoveBonusTalent(uint32 count) { m_extraBonusTalentCount -= count; };
+
+    // Per-class talent model (P3a): spent points invested in `classId`'s trees (owning class derived
+    // from TalentTab.ClassMask), and the projection view-adapter that renders the model onto the stock
+    // client's single points register + one-class packet for the projected class only.
+    [[nodiscard]] uint32 SpentTalentPointsForClass(uint8 classId) const;
+    void RecomputeProjectedTalentView();
+    // Active-set effect seams: bring a class's talents live on activate, strip them (keeping the rows) on
+    // bench. Called from the multiclass slot engine (and the login reconcile). Owning class from TalentTab.
+    void ActivateClassTalents(uint8 classId);
+    void BenchClassTalents(uint8 classId);
+    // Login reconcile: after the profile (active set) and talents are loaded, align every talent's
+    // active-set membership + auras to the CURRENT active set (an offline slot-cap trim may have benched
+    // or rescued a class since the last save), always keeping rows, then render the projected view.
+    void ReconcileMulticlassTalents();
 
     // Dual Spec
     void UpdateSpecCount(uint8 count);

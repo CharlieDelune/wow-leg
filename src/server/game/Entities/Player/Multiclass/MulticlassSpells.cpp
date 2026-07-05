@@ -116,4 +116,16 @@ namespace Multiclass
         uint32 const first = sSpellMgr->GetFirstSpellInChain(spellId);
         return GetTalentSpellCost(first) > 0 || sSpellMgr->IsAdditionalTalentSpell(first);
     }
+
+    uint8 TalentOwnerClass(uint32 spellId)
+    {
+        TalentSpellPos const* pos = GetTalentSpellPos(spellId);
+        if (!pos)
+            return 0;
+        TalentEntry const* talentInfo = sTalentStore.LookupEntry(pos->talent_id);
+        if (!talentInfo)
+            return 0;
+        TalentTabEntry const* tabInfo = sTalentTabStore.LookupEntry(talentInfo->TalentTab);
+        return tabInfo ? ClassIdFromMask(tabInfo->ClassMask) : uint8(0);
+    }
 }

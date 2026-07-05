@@ -5006,12 +5006,19 @@ void Player::_LoadMulticlassProfile()
 
     std::vector<MulticlassProfile::ClassProgress> pool;
     if (QueryResult result = CharacterDatabase.Query(Acore::StringFormat(
-        "SELECT `classId`, `level`, `xp` FROM `character_multiclass_class` WHERE `guid` = {}", low)))
+        "SELECT `classId`, `level`, `xp`, `talentResetCost`, `talentResetTime`"
+        " FROM `character_multiclass_class` WHERE `guid` = {}", low)))
     {
         do
         {
             Field* fields = result->Fetch();
-            pool.push_back({ fields[0].Get<uint8>(), fields[1].Get<uint8>(), fields[2].Get<uint32>() });
+            MulticlassProfile::ClassProgress cp;
+            cp.classId         = fields[0].Get<uint8>();
+            cp.level           = fields[1].Get<uint8>();
+            cp.xp              = fields[2].Get<uint32>();
+            cp.talentResetCost = fields[3].Get<uint32>();
+            cp.talentResetTime = fields[4].Get<uint32>();
+            pool.push_back(cp);
         } while (result->NextRow());
     }
 
@@ -5084,10 +5091,13 @@ void Player::_SaveMulticlassProfile(CharacterDatabaseTransaction trans)
 
     for (uint8 classId : mc.GetOwnedClasses())
         trans->Append(Acore::StringFormat(
-            "INSERT INTO `character_multiclass_class` (`guid`, `classId`, `level`, `xp`) VALUES ({}, {}, {}, {})"
-            " ON DUPLICATE KEY UPDATE `level` = {}, `xp` = {}",
+            "INSERT INTO `character_multiclass_class` (`guid`, `classId`, `level`, `xp`, `talentResetCost`, `talentResetTime`)"
+            " VALUES ({}, {}, {}, {}, {}, {})"
+            " ON DUPLICATE KEY UPDATE `level` = {}, `xp` = {}, `talentResetCost` = {}, `talentResetTime` = {}",
             low, classId, mc.GetClassLevel(classId), mc.GetClassXp(classId),
-            mc.GetClassLevel(classId), mc.GetClassXp(classId)));
+            mc.GetTalentResetCost(classId), mc.GetTalentResetTime(classId),
+            mc.GetClassLevel(classId), mc.GetClassXp(classId),
+            mc.GetTalentResetCost(classId), mc.GetTalentResetTime(classId)));
 
     trans->Append(Acore::StringFormat("DELETE FROM `character_multiclass_slot` WHERE `guid` = {}", low));
     // Persist each filled slot at its real position; empty slots are simply not written and are
@@ -5099,11 +5109,17 @@ void Player::_SaveMulticlassProfile(CharacterDatabaseTransaction trans)
                 "INSERT INTO `character_multiclass_slot` (`guid`, `slot`, `classId`, `unlocked`) VALUES ({}, {}, {}, 1)",
                 low, uint32(slot), slots[slot]));
 
-    // Persist the earned active-slot capacity (progression ratchet).
-    trans->Append(Acore::StringFormat(
-        "INSERT INTO `character_multiclass` (`guid`, `unlockedSlots`) VALUES ({}, {})"
-        " ON DUPLICATE KEY UPDATE `unlockedSlots` = {}",
-        low, uint32(mc.GetUnlockedSlots()), uint32(mc.GetUnlockedSlots())));
+    // Persist the earned active-slot capacity (progression ratchet) -- SEEDED profiles only. An unseeded
+    // profile (character creation, before _LoadMulticlassProfile's login seed) has an empty pool and the raw
+    // default _unlockedSlots (kSlotCapacityMax); persisting that here would let first login read it back and
+    // skip the level-rule backfill, granting a fresh character full slots. The owned-pool write above is
+    // already naturally skipped when the pool is empty; match it so this scalar cannot leak the unseeded
+    // default. A seeded profile always owns at least its creation class, so a non-empty pool == seeded.
+    if (!mc.GetOwnedClasses().empty())
+        trans->Append(Acore::StringFormat(
+            "INSERT INTO `character_multiclass` (`guid`, `unlockedSlots`) VALUES ({}, {})"
+            " ON DUPLICATE KEY UPDATE `unlockedSlots` = {}",
+            low, uint32(mc.GetUnlockedSlots()), uint32(mc.GetUnlockedSlots())));
 }
 
 // getClass() is a projection of active[0]. Keep UNIT_FIELD_BYTES_0 (byte 1 = class) in sync so the
@@ -5712,7 +5728,10 @@ bool Player::LoadFromDB(ObjectGuid playerGuid, CharacterDatabaseQueryHolder cons
     m_extraBonusTalentCount = fields[73].Get<uint8>();
 
     // after spell, bonus talents, and quest load
-    InitTalentForLevel();
+    if (IsMulticlassManaged())
+        ReconcileMulticlassTalents();   // reconcile every active class's talents to the set, then project
+    else
+        InitTalentForLevel();
 
     // must be before inventory (some items required reputation check)
     m_reputationMgr->LoadFromDB(holder.GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_REPUTATION));
