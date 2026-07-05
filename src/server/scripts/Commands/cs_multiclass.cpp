@@ -17,7 +17,9 @@
 
 #include "Chat.h"
 #include "CommandScript.h"
+#include "DBCStores.h"
 #include "MulticlassEngine.h"
+#include "MulticlassLogic.h"
 #include "Player.h"
 #include "SpellDefines.h"
 #include "SpellInfo.h"
@@ -43,7 +45,8 @@ public:
             { "setcapacity", HandleSetCapacity, SEC_GAMEMASTER, Console::No },
             { "talents",      HandleTalents,      SEC_GAMEMASTER, Console::No },
             { "spellcheck",   HandleSpellCheck,   SEC_GAMEMASTER, Console::No },
-            { "resettalents", HandleResetTalents, SEC_GAMEMASTER, Console::No }
+            { "resettalents", HandleResetTalents, SEC_GAMEMASTER, Console::No },
+            { "glyphs",       HandleGlyphs,       SEC_GAMEMASTER, Console::No }
         };
 
         static ChatCommandTable commandTable =
@@ -371,6 +374,53 @@ public:
             handler->PSendSysMessage("Reset talents for class {} (free, ladder unchanged).", uint32(classId));
         else
             handler->PSendSysMessage("Class {} had no talents to reset.", uint32(classId));
+
+        return true;
+    }
+
+    // Server-side ground truth for the per-class glyph MODEL. Per owned class: ACTIVE/BENCHED and its 6
+    // slots -- socketed glyph id + its aura spell (run `.multiclass spellcheck <spell>` to prove the mod),
+    // whether the slot is unlocked at the class's OWN level, and whether the aura is currently live on the
+    // player. Client-independent proof that glyphs are attributed per class and active classes' auras apply.
+    static bool HandleGlyphs(ChatHandler* handler)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+
+        if (!sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
+        {
+            handler->SendErrorMessage("Multiclass is disabled.");
+            return true;
+        }
+
+        MulticlassProfile const& mc = player->GetMulticlassProfile();
+        handler->PSendSysMessage("Glyph state: projected class {}.", uint32(mc.GetProjectedClass()));
+
+        for (uint8 classId : mc.GetOwnedClasses())
+        {
+            uint8 const level = mc.GetClassLevel(classId);
+            handler->PSendSysMessage("  class {} L{} {}:", uint32(classId), uint32(level),
+                mc.HasActiveClass(classId) ? "ACTIVE" : "BENCHED");
+
+            for (uint8 slot = 0; slot < MAX_GLYPH_SLOT_INDEX; ++slot)
+            {
+                uint8 const unlock = Multiclass::GlyphSlotUnlockLevel(slot);
+                bool const open = unlock == 0 || level >= unlock;
+                uint32 const glyph = player->GetClassGlyph(classId, slot);
+                if (!glyph)
+                {
+                    handler->PSendSysMessage("    slot {} [{}]: empty", uint32(slot), open ? "open" : "locked");
+                    continue;
+                }
+
+                GlyphPropertiesEntry const* glyphEntry = sGlyphPropertiesStore.LookupEntry(glyph);
+                uint32 const spellId = glyphEntry ? glyphEntry->SpellId : 0u;
+                bool const live = spellId != 0 && player->HasAura(spellId);
+                handler->PSendSysMessage("    slot {} [{}]: glyph {} -> spell {} ({})",
+                    uint32(slot), open ? "open" : "locked", glyph, spellId, live ? "aura LIVE" : "aura off");
+            }
+        }
 
         return true;
     }

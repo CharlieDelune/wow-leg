@@ -315,6 +315,28 @@ TEST(MulticlassLogicTest, TalentResetCost_decayPeriodIsTunable)
     EXPECT_EQ(TalentResetCost(30 * G, 7 * DAY_S, 7 * DAY_S), 25 * G);
 }
 
+TEST(MulticlassLogicTest, GlyphSlotUnlockLevel_matchesRetailLadder)
+{
+    EXPECT_EQ(GlyphSlotUnlockLevel(0), 15u);
+    EXPECT_EQ(GlyphSlotUnlockLevel(1), 15u);
+    EXPECT_EQ(GlyphSlotUnlockLevel(2), 50u);
+    EXPECT_EQ(GlyphSlotUnlockLevel(3), 30u);
+    EXPECT_EQ(GlyphSlotUnlockLevel(4), 70u);
+    EXPECT_EQ(GlyphSlotUnlockLevel(5), 80u);
+    EXPECT_EQ(GlyphSlotUnlockLevel(6), 0u);   // out of range -> no gate
+}
+
+TEST(MulticlassLogicTest, GlyphEnabledSlotMask_matchesNativeBitmask)
+{
+    EXPECT_EQ(GlyphEnabledSlotMask(1, 6),  0x00u);
+    EXPECT_EQ(GlyphEnabledSlotMask(14, 6), 0x00u);
+    EXPECT_EQ(GlyphEnabledSlotMask(15, 6), 0x03u);   // slots 0,1
+    EXPECT_EQ(GlyphEnabledSlotMask(30, 6), 0x0Bu);   // + slot 3 (0x08)
+    EXPECT_EQ(GlyphEnabledSlotMask(50, 6), 0x0Fu);   // + slot 2 (0x04)
+    EXPECT_EQ(GlyphEnabledSlotMask(70, 6), 0x1Fu);   // + slot 4 (0x10)
+    EXPECT_EQ(GlyphEnabledSlotMask(80, 6), 0x3Fu);   // + slot 5 (0x20)
+}
+
 TEST(MulticlassLogicTest, ClassIdFromMask_decodesSingleClassBit)
 {
     EXPECT_EQ(ClassIdFromMask(0u), 0u);                        // no class

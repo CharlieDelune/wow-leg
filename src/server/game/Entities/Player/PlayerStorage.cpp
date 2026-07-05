@@ -5729,7 +5729,10 @@ bool Player::LoadFromDB(ObjectGuid playerGuid, CharacterDatabaseQueryHolder cons
 
     // after spell, bonus talents, and quest load
     if (IsMulticlassManaged())
-        ReconcileMulticlassTalents();   // reconcile every active class's talents to the set, then project
+    {
+        ReconcileMulticlassGlyphs();    // bring every active class's glyph auras live (before the view refresh)
+        ReconcileMulticlassTalents();   // reconcile talents to the set, then project the talent + glyph view
+    }
     else
         InitTalentForLevel();
 
@@ -6061,6 +6064,12 @@ void Player::_LoadAuras(PreparedQueryResult result, uint32 timediff)
 
 void Player::_LoadGlyphAuras()
 {
+    // Managed characters apply every active class's glyphs via ReconcileMulticlassGlyphs (after the active
+    // set is established). The single-set vanilla path below would apply only the projected view and would
+    // double-apply once reconcile runs -- skip it here for managed.
+    if (IsMulticlassManaged())
+        return;
+
     for (uint8 i = 0; i < MAX_GLYPH_SLOT_INDEX; ++i)
     {
         if (uint32 glyph = GetGlyph(i))

@@ -316,6 +316,10 @@ Player::Player(WorldSession* session): Unit(), m_mover(this), _cinematicMgr(*thi
             m_Glyphs[i][g] = 0;
     }
 
+    for (uint8 c = 0; c < MAX_CLASSES; ++c)
+        for (uint8 s = 0; s < MAX_GLYPH_SLOT_INDEX; ++s)
+            m_multiclassGlyphs[c][s] = 0;
+
     for (uint8 i = 0; i < BASEMOD_END; ++i)
     {
         m_auraBaseFlatMod[i] = 0.0f;
@@ -3216,6 +3220,66 @@ void Player::ReconcileMulticlassTalents()
     SetMulticlassInOrchestration(false);
 
     RecomputeProjectedTalentView();
+}
+
+void Player::ActivateClassGlyphs(uint8 classId)
+{
+    if (classId == 0 || classId >= MAX_CLASSES)
+        return;
+
+    // A class entering the active set: apply each of its socketed glyphs' auras. Gate each slot on THIS
+    // class's OWN level (a low-level off-class has fewer usable slots). Stance-gated glyphs are (re)cast on
+    // shapeshift, not here (mirrors _LoadGlyphAuras). Stored ids are untouched; only auras go live.
+    uint8 const classLevel = GetMulticlassProfile().GetClassLevel(classId);
+    for (uint8 slot = 0; slot < MAX_GLYPH_SLOT_INDEX; ++slot)
+    {
+        uint32 const glyph = m_multiclassGlyphs[classId][slot];
+        if (!glyph)
+            continue;
+
+        uint8 const unlock = Multiclass::GlyphSlotUnlockLevel(slot);
+        if (unlock && classLevel < unlock)
+            continue;
+
+        GlyphPropertiesEntry const* glyphEntry = sGlyphPropertiesStore.LookupEntry(glyph);
+        if (!glyphEntry)
+            continue;
+
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(glyphEntry->SpellId);
+        if (spellInfo && spellInfo->Stances)
+            continue;
+
+        CastSpell(this, glyphEntry->SpellId, TriggerCastFlags(TRIGGERED_FULL_MASK & ~(TRIGGERED_IGNORE_SHAPESHIFT | TRIGGERED_IGNORE_CASTER_AURASTATE)));
+    }
+}
+
+void Player::BenchClassGlyphs(uint8 classId)
+{
+    if (classId == 0 || classId >= MAX_CLASSES)
+        return;
+
+    // A class leaving the active set: remove its glyph auras but KEEP the stored glyph ids so the set
+    // restores on re-activation. The model is untouched; only live auras are stripped.
+    for (uint8 slot = 0; slot < MAX_GLYPH_SLOT_INDEX; ++slot)
+    {
+        uint32 const glyph = m_multiclassGlyphs[classId][slot];
+        if (!glyph)
+            continue;
+        if (GlyphPropertiesEntry const* glyphEntry = sGlyphPropertiesStore.LookupEntry(glyph))
+            RemoveAurasDueToSpell(glyphEntry->SpellId);
+    }
+}
+
+void Player::ReconcileMulticlassGlyphs()
+{
+    // Login/set-change reconcile: apply the glyph auras of every ACTIVE class, skip benched. The model was
+    // loaded by _LoadGlyphs; the projected view is repainted separately by RecomputeProjectedTalentView
+    // (invoked from ReconcileMulticlassTalents). Guarded so glyph-triggered casts are not attributed to a
+    // class by the learn hook.
+    SetMulticlassInOrchestration(true);
+    for (uint8 classId : GetMulticlassProfile().GetActiveClasses())
+        ActivateClassGlyphs(classId);
+    SetMulticlassInOrchestration(false);
 }
 
 void Player::SendLearnPacket(uint32 spellId, bool learn)
@@ -13977,22 +14041,51 @@ void Player::InitGlyphsForLevel()
             if (gs->Order)
                 SetGlyphSlot(gs->Order - 1, gs->Id);
 
-    uint8 level = GetLevel();
-    uint32 value = 0;
+    // The enabled-slot bitmask reflects the level of the class whose panel the client is showing: the
+    // projected class's OWN level under management (so a high-level projected class shows all its slots even
+    // when paired with a lower-level active class), else the display level (vanilla).
+    uint8 const projected = GetMulticlassProfile().GetProjectedClass();
+    uint8 const glyphLevel = projected != 0 ? GetMulticlassProfile().GetClassLevel(projected) : GetLevel();
+    SetUInt32Value(PLAYER_GLYPHS_ENABLED, Multiclass::GlyphEnabledSlotMask(glyphLevel, MAX_GLYPH_SLOT_INDEX));
+}
 
-    // 0x3F = 0x01 | 0x02 | 0x04 | 0x08 | 0x10 | 0x20 for 80 level
-    if (level >= 15)
-        value |= (0x01 | 0x02);
-    if (level >= 30)
-        value |= 0x08;
-    if (level >= 50)
-        value |= 0x04;
-    if (level >= 70)
-        value |= 0x10;
-    if (level >= 80)
-        value |= 0x20;
+void Player::SetClassGlyph(uint8 classId, uint8 slot, uint32 glyph, bool save)
+{
+    if (classId >= MAX_CLASSES || slot >= MAX_GLYPH_SLOT_INDEX)
+        return;
 
-    SetUInt32Value(PLAYER_GLYPHS_ENABLED, value);
+    m_multiclassGlyphs[classId][slot] = glyph;
+
+    // Mirror into the single-set client VIEW when this class is the one the stock client is showing (the
+    // projected/slot-0 class). SetGlyph writes m_Glyphs[activeSpec=0][slot] + PLAYER_FIELD_GLYPHS_1.
+    if (classId == GetMulticlassProfile().GetProjectedClass())
+        SetGlyph(slot, glyph, false);
+
+    if (save)
+        SetNeedToSaveGlyphs(true);
+}
+
+uint32 Player::GetClassGlyph(uint8 classId, uint8 slot) const
+{
+    if (classId >= MAX_CLASSES || slot >= MAX_GLYPH_SLOT_INDEX)
+        return 0;
+    return m_multiclassGlyphs[classId][slot];
+}
+
+void Player::SyncProjectedGlyphView()
+{
+    // Repaint the client's single glyph panel to the projected class's model set: copy m_multiclassGlyphs
+    // [projected] into the view buffer m_Glyphs[0] + PLAYER_FIELD_GLYPHS_1..6, then refresh the slot types
+    // and enabled-slot bitmask to the projected class's OWN level (via InitGlyphsForLevel). Unmanaged
+    // characters never reach here (projected == 0).
+    uint8 const projected = GetMulticlassProfile().GetProjectedClass();
+    if (projected == 0)
+        return;
+
+    for (uint8 slot = 0; slot < MAX_GLYPH_SLOT_INDEX; ++slot)
+        SetGlyph(slot, m_multiclassGlyphs[projected][slot], false);
+
+    InitGlyphsForLevel();
 }
 
 bool Player::isTotalImmune() const
@@ -14332,6 +14425,8 @@ void Player::RecomputeProjectedTalentView()
     // falls back to getClass(), so a normal character's used/free counts are byte-vanilla.
     uint8 const projected = GetMulticlassProfile().GetProjectedClass();
     m_usedTalentCount = SpentTalentPointsForClass(projected != 0 ? projected : getClass());
+    SyncProjectedGlyphView();   // P3b: repaint the projected class's glyph panel BEFORE InitTalentForLevel
+                                // resends SMSG_TALENTS_INFO, so the packet carries the projected glyphs
     InitTalentForLevel();
 }
 
@@ -15808,24 +15903,34 @@ void Player::_SaveCharacter(bool create, CharacterDatabaseTransaction trans)
 
 void Player::_LoadGlyphs(PreparedQueryResult result)
 {
-    // SELECT talentGroup, glyph1, glyph2, glyph3, glyph4, glyph5, glyph6 from character_glyphs WHERE guid = '%u'
+    // SELECT talentGroup, glyph1..glyph6 FROM character_glyphs WHERE guid = ?
+    // Managed: talentGroup is reused as classId -- one row per owned class. Unmanaged: vanilla spec rows.
     if (!result)
         return;
+
+    bool const managed = IsMulticlassManaged();
 
     do
     {
         Field* fields = result->Fetch();
+        uint8 const key = fields[0].Get<uint8>();
 
-        uint8 spec = fields[0].Get<uint8>();
-        if (spec >= m_specsCount)
-            continue;
-
-        m_Glyphs[spec][0] = fields[1].Get<uint16>();
-        m_Glyphs[spec][1] = fields[2].Get<uint16>();
-        m_Glyphs[spec][2] = fields[3].Get<uint16>();
-        m_Glyphs[spec][3] = fields[4].Get<uint16>();
-        m_Glyphs[spec][4] = fields[5].Get<uint16>();
-        m_Glyphs[spec][5] = fields[6].Get<uint16>();
+        if (managed)
+        {
+            // The profile is loaded before glyphs (LoadFromDB order), so ownership is known here. Skip rows
+            // for a class this character no longer owns.
+            if (key >= MAX_CLASSES || !GetMulticlassProfile().HasOwnedClass(key))
+                continue;
+            for (uint8 i = 0; i < MAX_GLYPH_SLOT_INDEX; ++i)
+                m_multiclassGlyphs[key][i] = fields[i + 1].Get<uint16>();
+        }
+        else
+        {
+            if (key >= m_specsCount)
+                continue;
+            for (uint8 i = 0; i < MAX_GLYPH_SLOT_INDEX; ++i)
+                m_Glyphs[key][i] = fields[i + 1].Get<uint16>();
+        }
     } while (result->NextRow());
 }
 
@@ -15838,18 +15943,35 @@ void Player::_SaveGlyphs(CharacterDatabaseTransaction trans)
     stmt->SetData(0, GetGUID().GetCounter());
     trans->Append(stmt);
 
-    for (uint8 spec = 0; spec < m_specsCount; ++spec)
+    if (IsMulticlassManaged())
     {
-        uint8 index = 0;
-
-        stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CHAR_GLYPHS);
-        stmt->SetData(index++, GetGUID().GetCounter());
-        stmt->SetData(index++, spec);
-
-        for (uint8 i = 0; i < MAX_GLYPH_SLOT_INDEX; ++i)
-            stmt->SetData(index++, uint16(m_Glyphs[spec][i]));
-
-        trans->Append(stmt);
+        // One row per OWNED class, talentGroup reused as classId. Benched classes are saved too, so their
+        // glyph sets survive and restore on re-activation (the P3a "bench keeps rows" discipline).
+        for (uint8 classId : GetMulticlassProfile().GetOwnedClasses())
+        {
+            if (classId >= MAX_CLASSES)
+                continue;
+            uint8 index = 0;
+            stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CHAR_GLYPHS);
+            stmt->SetData(index++, GetGUID().GetCounter());
+            stmt->SetData(index++, classId);
+            for (uint8 i = 0; i < MAX_GLYPH_SLOT_INDEX; ++i)
+                stmt->SetData(index++, uint16(m_multiclassGlyphs[classId][i]));
+            trans->Append(stmt);
+        }
+    }
+    else
+    {
+        for (uint8 spec = 0; spec < m_specsCount; ++spec)
+        {
+            uint8 index = 0;
+            stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CHAR_GLYPHS);
+            stmt->SetData(index++, GetGUID().GetCounter());
+            stmt->SetData(index++, spec);
+            for (uint8 i = 0; i < MAX_GLYPH_SLOT_INDEX; ++i)
+                stmt->SetData(index++, uint16(m_Glyphs[spec][i]));
+            trans->Append(stmt);
+        }
     }
 
     SetNeedToSaveGlyphs(false);

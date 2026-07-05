@@ -1810,6 +1810,13 @@ public:
     // or rescued a class since the last save), always keeping rows, then render the projected view.
     void ReconcileMulticlassTalents();
 
+    // P3b glyph effect seams, mirroring the talent seams above: bring a class's socketed glyphs live on
+    // activate (gated on that class's own level), strip them (keeping the stored ids) on bench, and reconcile
+    // every active class's glyph auras at login.
+    void ActivateClassGlyphs(uint8 classId);
+    void BenchClassGlyphs(uint8 classId);
+    void ReconcileMulticlassGlyphs();
+
     // Dual Spec
     void UpdateSpecCount(uint8 count);
     [[nodiscard]] uint8 GetActiveSpec() const { return m_activeSpec; }
@@ -1839,6 +1846,12 @@ public:
             SetNeedToSaveGlyphs(true);
     }
     [[nodiscard]] uint32 GetGlyph(uint8 slot) const { return m_Glyphs[m_activeSpec][slot]; }
+
+    // P3b per-class glyphs: model accessors + the projection view-sync. Owning class comes from the glyph
+    // item's SubClass at socket time and is the storage key thereafter, so these never re-derive it.
+    void SetClassGlyph(uint8 classId, uint8 slot, uint32 glyph, bool save);
+    [[nodiscard]] uint32 GetClassGlyph(uint8 classId, uint8 slot) const;
+    void SyncProjectedGlyphView();
 
     [[nodiscard]] uint32 GetFreePrimaryProfessionPoints() const { return GetUInt32Value(PLAYER_CHARACTER_POINTS2); }
     void SetFreePrimaryProfessions(uint16 profs) { SetUInt32Value(PLAYER_CHARACTER_POINTS2, profs); }
@@ -2991,6 +3004,12 @@ protected:
     uint8 m_specsCount;
 
     uint32 m_Glyphs[MAX_TALENT_SPECS][MAX_GLYPH_SLOT_INDEX];
+
+    // P3b per-class glyph MODEL: m_multiclassGlyphs[classId][slot] holds every OWNED class's 6 socketed
+    // glyphs (indexed by classId 1..11; indices 0 and 10 unused). m_Glyphs above stays the single-set client
+    // VIEW -- under management m_Glyphs[0] mirrors the PROJECTED class's model set. Unmanaged: this is unused
+    // and m_Glyphs is the sole (vanilla) store.
+    uint32 m_multiclassGlyphs[MAX_CLASSES][MAX_GLYPH_SLOT_INDEX];
 
     ActionButtonList m_actionButtons;
 

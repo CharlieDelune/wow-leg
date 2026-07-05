@@ -2190,6 +2190,15 @@ void Player::UpdateFallInformationIfNeed(MovementInfo const& minfo,
 
 void Player::UpdateSpecCount(uint8 count)
 {
+    // Multiclass supersedes Dual Talent Specialization: a managed character always keeps exactly ONE spec group
+    // (m_specsCount stays 1) so the per-class talent/glyph model is never swapped out by ActivateSpec's spec
+    // swap. Refuse raising the spec count for a managed character -- the dual-spec purchase is a no-op under
+    // multiclass. (Note: if the dual-spec trainer gossip is actually reachable for a managed character, it
+    // should ALSO be removed at the content/DB level so players cannot waste gold on a no-op; this code guard
+    // is the correctness protection against the model desync.)
+    if (IsMulticlassManaged() && count > 1)
+        return;
+
     uint32 curCount = GetSpecsCount();
     if (curCount == count)
         return;

@@ -1602,7 +1602,13 @@ void WorldSession::HandleRemoveGlyph(WorldPacket& recvData)
         return;
     }
 
-    if (uint32 glyph = _player->GetGlyph(slot))
+    // Managed: the stock client's glyph panel shows the projected class, so a removal targets that class's
+    // slot in the per-class model. Unmanaged: the vanilla single view.
+    bool const managed = _player->IsMulticlassManaged();
+    uint8 const owner = managed ? _player->GetMulticlassProfile().GetProjectedClass() : uint8(0);
+    uint32 const glyph = (managed && owner != 0) ? _player->GetClassGlyph(owner, slot) : _player->GetGlyph(slot);
+
+    if (glyph)
     {
         if (GlyphPropertiesEntry const* glyphEntry = sGlyphPropertiesStore.LookupEntry(glyph))
         {
@@ -1625,7 +1631,10 @@ void WorldSession::HandleRemoveGlyph(WorldPacket& recvData)
             }
 
             _player->SendLearnPacket(glyphEntry->SpellId, false); // Send packet to properly handle client-side spell tooltips
-            _player->SetGlyph(slot, 0, true);
+            if (managed && owner != 0)
+                _player->SetClassGlyph(owner, slot, 0, true);
+            else
+                _player->SetGlyph(slot, 0, true);
             _player->SendTalentsInfoData(false);
         }
     }

@@ -171,6 +171,44 @@ namespace Multiclass
         return level < 10 ? 0u : static_cast<uint32>(level - 9);
     }
 
+    // Glyph slot -> the character level at which that slot unlocks (retail: slots 0/1 at 15, slot 3 at 30,
+    // slot 2 at 50, slot 4 at 70, slot 5 at 80). Pure so both the socket-time gate and the enabled-slot
+    // bitmask derive from ONE source. Out-of-range slots return 0 (no gate).
+    inline uint8 GlyphSlotUnlockLevel(uint8 slot)
+    {
+        switch (slot)
+        {
+            case 0:
+            case 1:
+                return 15;
+            case 2:
+                return 50;
+            case 3:
+                return 30;
+            case 4:
+                return 70;
+            case 5:
+                return 80;
+            default:
+                return 0;
+        }
+    }
+
+    // The PLAYER_GLYPHS_ENABLED bitmask for a level: bit i set when level >= GlyphSlotUnlockLevel(i).
+    // Byte-identical to the native InitGlyphsForLevel ladder (0x03@15, +0x08@30, +0x04@50, +0x10@70,
+    // +0x20@80). `slotCount` is passed in (== MAX_GLYPH_SLOT_INDEX) so this header needs no game include.
+    inline uint32 GlyphEnabledSlotMask(uint8 level, uint8 slotCount)
+    {
+        uint32 mask = 0;
+        for (uint8 slot = 0; slot < slotCount; ++slot)
+        {
+            uint8 const unlock = GlyphSlotUnlockLevel(slot);
+            if (unlock && level >= unlock)
+                mask |= (1u << slot);
+        }
+        return mask;
+    }
+
     // Native talent-reset cost ladder, extracted pure for unit testing and reuse by the per-class ladder.
     // `lastCostCopper` is the last cost paid (0 == never reset), `secondsSinceReset` is (now - lastReset),
     // `decayPeriodSeconds` is the tunable decay window (native == 30 days). Mirrors retail exactly: opening

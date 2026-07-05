@@ -32,10 +32,13 @@
 #include "GridNotifiers.h"
 #include "Group.h"
 #include "InstanceScript.h"
+#include "ItemTemplate.h"
 #include "Language.h"
 #include "Log.h"
 #include "MapMgr.h"
 #include "MiscPackets.h"
+#include "MulticlassLogic.h"
+#include "MulticlassProfile.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Opcodes.h"
@@ -4349,28 +4352,31 @@ void Spell::EffectApplyGlyph(SpellEffIndex effIndex)
 
     Player* player = m_caster->ToPlayer();
 
-    // glyph sockets level requirement
-    uint8 minLevel = 0;
-    switch (m_glyphIndex)
+    bool const managed = player->IsMulticlassManaged();
+
+    // Owning class of the glyph being socketed. A glyph item is ITEM_CLASS_GLYPH and its SubClass == classId
+    // (1:1). Under management this drives which class's model set the glyph belongs to and which class's level
+    // gates the slot. Fall back to the projected class if the source item is somehow unavailable.
+    uint8 owner = 0;
+    if (m_CastItem && m_CastItem->GetTemplate()->Class == ITEM_CLASS_GLYPH)
+        owner = uint8(m_CastItem->GetTemplate()->SubClass);
+    if (managed && owner == 0)
+        owner = player->GetMulticlassProfile().GetProjectedClass();
+
+    // Managed: the glyph must belong to a class currently in the active set (mirrors LearnTalent's
+    // owning-class-active gate). Benched/unowned classes cannot be edited from the stock single panel.
+    if (managed && owner != 0 && !player->GetMulticlassProfile().HasActiveClass(owner))
     {
-        case 0:
-        case 1:
-            minLevel = 15;
-            break;
-        case 2:
-            minLevel = 50;
-            break;
-        case 3:
-            minLevel = 30;
-            break;
-        case 4:
-            minLevel = 70;
-            break;
-        case 5:
-            minLevel = 80;
-            break;
+        SendCastResult(SPELL_FAILED_INVALID_GLYPH);
+        return;
     }
-    if (minLevel && m_caster->GetLevel() < minLevel)
+
+    // glyph sockets level requirement -- gated on the OWNING class's level under management (its own glyph
+    // slots), else the display level (vanilla).
+    uint8 const minLevel = Multiclass::GlyphSlotUnlockLevel(m_glyphIndex);
+    uint8 const gateLevel = (managed && owner != 0) ? player->GetMulticlassProfile().GetClassLevel(owner)
+                                                    : uint8(m_caster->GetLevel());
+    if (minLevel && gateLevel < minLevel)
     {
         SendCastResult(SPELL_FAILED_GLYPH_SOCKET_LOCKED);
         return;
@@ -4390,8 +4396,11 @@ void Spell::EffectApplyGlyph(SpellEffIndex effIndex)
                 }
             }
 
-            // remove old glyph aura
-            if (uint32 oldGlyph = player->GetGlyph(m_glyphIndex))
+            // remove old glyph aura -- read the OWNING class's current glyph in this slot (managed) so the
+            // right class's old glyph is stripped, not the view's.
+            uint32 const oldGlyph = (managed && owner != 0) ? player->GetClassGlyph(owner, m_glyphIndex)
+                                                            : player->GetGlyph(m_glyphIndex);
+            if (oldGlyph)
                 if (GlyphPropertiesEntry const* oldGlyphEntry = sGlyphPropertiesStore.LookupEntry(oldGlyph))
                 {
                     player->RemoveAurasDueToSpell(oldGlyphEntry->SpellId);
@@ -4417,7 +4426,14 @@ void Spell::EffectApplyGlyph(SpellEffIndex effIndex)
 
             player->SendLearnPacket(glyphEntry->SpellId, true); // Send packet to properly handle client-side spell tooltips
             player->CastSpell(m_caster, glyphEntry->SpellId, TriggerCastFlags(TRIGGERED_FULL_MASK & ~(TRIGGERED_IGNORE_SHAPESHIFT | TRIGGERED_IGNORE_CASTER_AURASTATE)));
-            player->SetGlyph(m_glyphIndex, glyph, !player->GetSession()->PlayerLoading());
+
+            // Write the model (managed: the owning class's set, which mirrors the view when owner ==
+            // projected); unmanaged keeps the vanilla single view.
+            if (managed && owner != 0)
+                player->SetClassGlyph(owner, m_glyphIndex, glyph, !player->GetSession()->PlayerLoading());
+            else
+                player->SetGlyph(m_glyphIndex, glyph, !player->GetSession()->PlayerLoading());
+
             player->SendTalentsInfoData(false);
         }
     }

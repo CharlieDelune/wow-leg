@@ -25,6 +25,8 @@
 #include "GameTime.h"
 #include "GridNotifiers.h"
 #include "Log.h"
+#include "MulticlassLogic.h"
+#include "MulticlassProfile.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Opcodes.h"
@@ -1476,18 +1478,52 @@ void AuraEffect::HandleShapeshiftBoosts(Unit* target, bool apply) const
                     target->CastSpell(target, itr->first, true, nullptr, this, target->GetGUID());
             }
 
-            // Also do it for Glyphs
-            for (uint32 i = 0; i < MAX_GLYPH_SLOT_INDEX; ++i)
+            // Also do it for Glyphs. Managed (multiclass) characters recast the stance-gated glyph of EVERY
+            // active class for this form -- the union promise -- reading the per-class MODEL, not just the
+            // projected VIEW buffer (which would cover only the projected class). Each slot is gated on its
+            // owning class's own level. Unmanaged characters keep the vanilla single-view loop unchanged.
+            if (player->IsMulticlassManaged())
             {
-                if (uint32 glyphId = player->GetGlyph(i))
+                for (uint8 classId : player->GetMulticlassProfile().GetActiveClasses())
                 {
-                    if (GlyphPropertiesEntry const* glyph = sGlyphPropertiesStore.LookupEntry(glyphId))
+                    uint8 const classLevel = player->GetMulticlassProfile().GetClassLevel(classId);
+                    for (uint8 i = 0; i < MAX_GLYPH_SLOT_INDEX; ++i)
                     {
+                        uint32 const glyphId = player->GetClassGlyph(classId, i);
+                        if (!glyphId)
+                            continue;
+
+                        uint8 const unlock = Multiclass::GlyphSlotUnlockLevel(i);
+                        if (unlock && classLevel < unlock)
+                            continue;
+
+                        GlyphPropertiesEntry const* glyph = sGlyphPropertiesStore.LookupEntry(glyphId);
+                        if (!glyph)
+                            continue;
+
                         SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(glyph->SpellId);
                         if (!spellInfo || !spellInfo->HasAttribute(SpellAttr0(SPELL_ATTR0_PASSIVE | SPELL_ATTR0_DO_NOT_DISPLAY)))
                             continue;
+
                         if (spellInfo->Stances & (1 << (GetMiscValue() - 1)))
                             target->CastSpell(target, glyph->SpellId, TriggerCastFlags(TRIGGERED_FULL_MASK & ~(TRIGGERED_IGNORE_SHAPESHIFT | TRIGGERED_IGNORE_CASTER_AURASTATE)), nullptr, this, target->GetGUID());
+                    }
+                }
+            }
+            else
+            {
+                for (uint32 i = 0; i < MAX_GLYPH_SLOT_INDEX; ++i)
+                {
+                    if (uint32 glyphId = player->GetGlyph(i))
+                    {
+                        if (GlyphPropertiesEntry const* glyph = sGlyphPropertiesStore.LookupEntry(glyphId))
+                        {
+                            SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(glyph->SpellId);
+                            if (!spellInfo || !spellInfo->HasAttribute(SpellAttr0(SPELL_ATTR0_PASSIVE | SPELL_ATTR0_DO_NOT_DISPLAY)))
+                                continue;
+                            if (spellInfo->Stances & (1 << (GetMiscValue() - 1)))
+                                target->CastSpell(target, glyph->SpellId, TriggerCastFlags(TRIGGERED_FULL_MASK & ~(TRIGGERED_IGNORE_SHAPESHIFT | TRIGGERED_IGNORE_CASTER_AURASTATE)), nullptr, this, target->GetGUID());
+                        }
                     }
                 }
             }

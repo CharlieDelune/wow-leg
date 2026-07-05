@@ -204,6 +204,7 @@ namespace Multiclass
         // talents yet -> no-op. The projected view is refreshed by FinalizeActiveSetChange.
         player->SetMulticlassInOrchestration(true);
         player->ActivateClassTalents(classId);
+        player->ActivateClassGlyphs(classId);
         player->SetMulticlassInOrchestration(false);
     }
 
@@ -455,6 +456,7 @@ namespace Multiclass
             // Guarded like the spell/skill removals so talent-triggered spell removes are not re-attributed.
             player->SetMulticlassInOrchestration(true);
             player->BenchClassTalents(oldClassId);
+            player->BenchClassGlyphs(oldClassId);
             player->SetMulticlassInOrchestration(false);
         }
 
