@@ -40,6 +40,9 @@ namespace Multiclass
     void ActivateClass(Player* player, uint8 slot, uint8 classId);
     void SwapSlotClass(Player* player, uint8 slot, uint8 newClassId);
     void UnsetSlot(Player* player, uint8 slot);
+    void GrantSlotCapacity(Player* player, uint8 target);   // monotonic: raise earned capacity, never lower
+    void SetSlotCapacity(Player* player, uint8 n);          // absolute: set earned capacity, evict if lower
+    void EnforceActiveCapacity(Player* player);             // bench over-cap slots (highest index first)
     void ReconcileDisplayLevel(Player* player);
     void RouteExperience(Player* player, uint32 effectiveXp);
     void AttributeLearnedSpell(Player* player, uint32 spellId);

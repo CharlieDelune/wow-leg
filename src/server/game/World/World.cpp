@@ -190,6 +190,7 @@ void World::LoadConfigSettings(bool reload)
     // or Multiclass.CombinedStats changing on a live `.reload config` (below).
     bool const multiclassWasEnabled = reload && getBoolConfig(CONFIG_MULTICLASS_ENABLE);
     uint32 const multiclassPrevCombinedStats = reload ? getIntConfig(CONFIG_MULTICLASS_COMBINED_STATS) : 0u;
+    uint32 const multiclassPrevMaxActive = reload ? getIntConfig(CONFIG_MULTICLASS_MAX_ACTIVE_CLASSES) : 0u;
 
     _worldConfig.Initialize(reload);
 
@@ -214,6 +215,15 @@ void World::LoadConfigSettings(bool reload)
             for (auto const& itr : sWorldSessionMgr->GetAllSessions())
                 if (Player* player = itr.second->GetPlayer())
                     player->RecalculateMulticlassStats();
+
+        // A changed active-class ceiling must be re-applied to the whole online population immediately:
+        // lowering it evicts over-cap slots (bench, still owned), raising it makes new slots settable.
+        // ReapplyActiveCeiling is a no-op for a character whose filled count already fits, so a blanket
+        // sweep is safe. Offline characters are handled on next login by _LoadMulticlassProfile.
+        if (multiclassPrevMaxActive != getIntConfig(CONFIG_MULTICLASS_MAX_ACTIVE_CLASSES))
+            for (auto const& itr : sWorldSessionMgr->GetAllSessions())
+                if (Player* player = itr.second->GetPlayer())
+                    player->ReapplyActiveCeiling();
     }
 
     for (uint8 i = 0; i < MAX_MOVE_TYPE; ++i)

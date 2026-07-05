@@ -4982,6 +4982,14 @@ bool Player::isBeingLoaded() const
     return GetSession()->PlayerLoading();
 }
 
+uint8 Player::NormalizedActiveCeiling() const
+{
+    uint32 cap = sWorld->getIntConfig(CONFIG_MULTICLASS_MAX_ACTIVE_CLASSES);
+    if (cap == 0 || cap >= MAX_CLASSES)
+        cap = MAX_CLASSES - 1;
+    return uint8(cap);
+}
+
 void Player::_LoadMulticlassProfile()
 {
     // Transitional gate: the class-set is core-owned, but until the module is folded into core (P2) it
@@ -4990,11 +4998,9 @@ void Player::_LoadMulticlassProfile()
     if (!sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
         return;
 
-    // Cap from per-world config; 0 == unlimited (all playable classes).
-    uint32 cap = sWorld->getIntConfig(CONFIG_MULTICLASS_MAX_ACTIVE_CLASSES);
-    if (cap == 0 || cap >= MAX_CLASSES)
-        cap = MAX_CLASSES - 1;
-    m_multiclassProfile.SetMaxActiveClasses(uint8(cap));
+    // The effective active cap is min(earned unlockedSlots, per-world ceiling). Set the ceiling now; the
+    // earned value is read/seeded below (after the pool is known) so Load() trims to the final cap.
+    m_multiclassProfile.SetActiveCeiling(NormalizedActiveCeiling());
 
     uint32 const low = GetGUID().GetCounter();
 
@@ -5029,6 +5035,30 @@ void Player::_LoadMulticlassProfile()
     {
         pool.push_back({ getClass(), GetLevel(), GetUInt32Value(PLAYER_XP) });
         slots.assign(1, getClass());   // slot 0 = the character's own class
+    }
+
+    // Earned active-slot capacity (progression ratchet). Read the persisted scalar; if this character has
+    // no row yet (existing pre-feature characters and brand-new ones), backfill it from the level rule
+    // against the furthest progression in the pool, and persist immediately (crash-safe, idempotent). This
+    // self-heals absent rows -- no data-migration script. Setting it here recomputes _maxActive, so the
+    // Load() below trims any slots the (possibly lowered) effective cap can no longer hold, into the bench.
+    if (QueryResult capResult = CharacterDatabase.Query(Acore::StringFormat(
+        "SELECT `unlockedSlots` FROM `character_multiclass` WHERE `guid` = {}", low)))
+    {
+        m_multiclassProfile.SetUnlockedSlots(capResult->Fetch()[0].Get<uint8>());
+    }
+    else
+    {
+        uint8 highestOwned = 0;
+        for (MulticlassProfile::ClassProgress const& cp : pool)
+            if (cp.level > highestOwned)
+                highestOwned = cp.level;
+        uint8 const seeded = MulticlassProfile::SlotCapacityForLevel(highestOwned);
+        m_multiclassProfile.SetUnlockedSlots(seeded);
+        CharacterDatabase.Execute(Acore::StringFormat(
+            "INSERT INTO `character_multiclass` (`guid`, `unlockedSlots`) VALUES ({}, {})"
+            " ON DUPLICATE KEY UPDATE `unlockedSlots` = {}",
+            low, uint32(seeded), uint32(seeded)));
     }
 
     m_multiclassProfile.Load(pool, slots);
@@ -5068,6 +5098,12 @@ void Player::_SaveMulticlassProfile(CharacterDatabaseTransaction trans)
             trans->Append(Acore::StringFormat(
                 "INSERT INTO `character_multiclass_slot` (`guid`, `slot`, `classId`, `unlocked`) VALUES ({}, {}, {}, 1)",
                 low, uint32(slot), slots[slot]));
+
+    // Persist the earned active-slot capacity (progression ratchet).
+    trans->Append(Acore::StringFormat(
+        "INSERT INTO `character_multiclass` (`guid`, `unlockedSlots`) VALUES ({}, {})"
+        " ON DUPLICATE KEY UPDATE `unlockedSlots` = {}",
+        low, uint32(mc.GetUnlockedSlots()), uint32(mc.GetUnlockedSlots())));
 }
 
 // getClass() is a projection of active[0]. Keep UNIT_FIELD_BYTES_0 (byte 1 = class) in sync so the
@@ -5104,6 +5140,17 @@ void Player::ApplyLiveMulticlassEnable()
     _LoadMulticlassProfile();       // seeds from getClass()/GetLevel()/PLAYER_XP when no rows exist
     Multiclass::LoadLedger(this);
     SaveMulticlassProfile();        // persist the seeded set tables immediately (crash-safe)
+}
+
+void Player::ReapplyActiveCeiling()
+{
+    // A live `.reload config` that lowers Multiclass.MaxActiveClasses must not let already-in-world
+    // characters keep an over-cap loadout (they never relog). Re-inject the ceiling and evict the excess.
+    // Earned unlockedSlots is untouched; only the live active set is trimmed to min(unlocked, ceiling).
+    if (!sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
+        return;
+    m_multiclassProfile.SetActiveCeiling(NormalizedActiveCeiling());
+    Multiclass::EnforceActiveCapacity(this);
 }
 
 bool Player::LoadFromDB(ObjectGuid playerGuid, CharacterDatabaseQueryHolder const& holder)

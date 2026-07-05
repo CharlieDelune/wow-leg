@@ -57,14 +57,80 @@ TEST(MulticlassProfile, SetClassProgress_updatesOwnedFailsForUnowned)
     EXPECT_FALSE(p.SetClassProgress(4, 5, 0));  // rogue not owned
 }
 
-TEST(MulticlassProfile, MaxActiveClasses_defaultsToThreeAndClampsToOne)
+TEST(MulticlassProfile, ActiveCeiling_defaultEffectiveThreeAndClampsToOne)
 {
     MulticlassProfile p;
-    EXPECT_EQ(p.GetMaxActiveClasses(), 3u);
-    p.SetMaxActiveClasses(0);
-    EXPECT_EQ(p.GetMaxActiveClasses(), 1u);  // clamped
-    p.SetMaxActiveClasses(9);
-    EXPECT_EQ(p.GetMaxActiveClasses(), 9u);
+    EXPECT_EQ(p.GetMaxActiveClasses(), 3u);  // default: min(unlocked 11, ceiling 3)
+    p.SetActiveCeiling(0);
+    EXPECT_EQ(p.GetMaxActiveClasses(), 1u);  // ceiling floored to 1
+    p.SetActiveCeiling(9);
+    EXPECT_EQ(p.GetMaxActiveClasses(), 9u);  // min(unlocked 11, ceiling 9)
+}
+
+TEST(MulticlassProfile, EffectiveCap_isMinOfUnlockedAndCeiling)
+{
+    MulticlassProfile p;
+    p.SetActiveCeiling(6);
+    p.SetUnlockedSlots(2);
+    EXPECT_EQ(p.GetMaxActiveClasses(), 2u);  // unlocked binds
+    p.SetUnlockedSlots(9);
+    EXPECT_EQ(p.GetMaxActiveClasses(), 6u);  // ceiling binds
+    p.SetActiveCeiling(1);
+    EXPECT_EQ(p.GetMaxActiveClasses(), 1u);
+}
+
+TEST(MulticlassProfile, SetUnlockedSlots_clampsToOneAndMax)
+{
+    MulticlassProfile p;
+    p.SetActiveCeiling(11);
+    p.SetUnlockedSlots(0);
+    EXPECT_EQ(p.GetUnlockedSlots(), 1u);      // floored
+    EXPECT_EQ(p.GetMaxActiveClasses(), 1u);
+    p.SetUnlockedSlots(50);
+    EXPECT_EQ(p.GetUnlockedSlots(), 11u);     // capped at kSlotCapacityMax
+    EXPECT_EQ(p.GetMaxActiveClasses(), 11u);
+}
+
+TEST(MulticlassProfile, RaiseUnlockedTo_isMonotonicAndReportsChange)
+{
+    MulticlassProfile p;
+    p.SetActiveCeiling(11);
+    p.SetUnlockedSlots(2);
+    EXPECT_FALSE(p.RaiseUnlockedTo(1));    // lower target -> no change
+    EXPECT_EQ(p.GetUnlockedSlots(), 2u);
+    EXPECT_FALSE(p.RaiseUnlockedTo(2));    // equal target -> no change
+    EXPECT_TRUE(p.RaiseUnlockedTo(4));     // higher -> raises and reports change
+    EXPECT_EQ(p.GetUnlockedSlots(), 4u);
+    EXPECT_TRUE(p.RaiseUnlockedTo(50));    // clamps to kSlotCapacityMax, still a change
+    EXPECT_EQ(p.GetUnlockedSlots(), 11u);
+}
+
+TEST(MulticlassProfile, SlotCapacityForLevel_mapsLevelBands)
+{
+    EXPECT_EQ(MulticlassProfile::SlotCapacityForLevel(1), 1u);
+    EXPECT_EQ(MulticlassProfile::SlotCapacityForLevel(4), 1u);
+    EXPECT_EQ(MulticlassProfile::SlotCapacityForLevel(5), 2u);
+    EXPECT_EQ(MulticlassProfile::SlotCapacityForLevel(9), 2u);
+    EXPECT_EQ(MulticlassProfile::SlotCapacityForLevel(10), 11u);
+    EXPECT_EQ(MulticlassProfile::SlotCapacityForLevel(80), 11u);
+}
+
+TEST(MulticlassProfile, GetMaxOwnedLevel_returnsHighestPoolLevelActiveOrBenched)
+{
+    MulticlassProfile p;
+    EXPECT_EQ(p.GetMaxOwnedLevel(), 0u);      // empty pool
+    p.Load({ { 1, 20, 0 }, { 8, 45, 0 }, { 4, 5, 0 } }, { 1 });  // mage benched at 45
+    EXPECT_EQ(p.GetMaxOwnedLevel(), 45u);     // benched class still counts
+}
+
+TEST(MulticlassProfile, Load_dropsSlotsAboveEffectiveCapWhenUnlockedBinds)
+{
+    MulticlassProfile p;
+    p.SetActiveCeiling(6);
+    p.SetUnlockedSlots(1);                    // effective cap 1
+    p.Load({ { 1, 10, 0 }, { 8, 10, 0 } }, { 1, 8 });
+    EXPECT_EQ(p.GetActiveClasses(), (std::vector<uint8>{ 1 }));  // 2nd dropped by unlocked-derived cap
+    EXPECT_TRUE(p.HasOwnedClass(8));          // benched, still owned
 }
 
 TEST(MulticlassProfile, SetSlot_requiresOwnedAndFillsPositions)
@@ -119,7 +185,7 @@ TEST(MulticlassProfile, GetActiveClassMask_orsFilledSlotBitsOnly)
 TEST(MulticlassProfile, SetSlot_rejectsSlotBeyondCap)
 {
     MulticlassProfile p;
-    p.SetMaxActiveClasses(2);
+    p.SetActiveCeiling(2);
     p.AddOwnedClass(1);
     p.AddOwnedClass(8);
     p.AddOwnedClass(11);
@@ -216,7 +282,7 @@ TEST(MulticlassProfile, Load_resetsThenPopulatesPoolAndActiveInOrder)
 TEST(MulticlassProfile, Load_respectsMaxActiveCap)
 {
     MulticlassProfile p;
-    p.SetMaxActiveClasses(1);
+    p.SetActiveCeiling(1);
     p.Load({ { 1, 1, 0 }, { 8, 1, 0 } }, { 1, 8 });
     EXPECT_EQ(p.GetActiveClasses(), (std::vector<uint8>{ 1 }));  // second active dropped by cap
     EXPECT_TRUE(p.HasOwnedClass(8));                             // still owned, just benched
@@ -232,6 +298,71 @@ TEST(MulticlassProfile, Load_preservesSlotHoles)
     EXPECT_EQ(p.GetActiveClasses(), (std::vector<uint8>{ 4 }));  // compact view = just the rogue
     EXPECT_EQ(p.GetProjectedClass(), 4u);
     EXPECT_TRUE(p.HasOwnedClass(1));                             // owned but in no slot (benched)
+}
+
+TEST(MulticlassProfile, CompactSoleActiveIntoCap_relocatesLoneStrandedClassToSlotZero)
+{
+    MulticlassProfile p;
+    p.SetActiveCeiling(3);
+    p.AddOwnedClass(8);
+    p.SetSlot(2, 8);                 // Mage alone at slot 2 (holes 0,1)
+    p.SetActiveCeiling(2);           // cap now 2 -> Mage@2 is stranded above the cap
+    EXPECT_TRUE(p.CompactSoleActiveIntoCap());
+    EXPECT_EQ(p.GetClassAtSlot(0), 8u);
+    EXPECT_EQ(p.GetClassAtSlot(2), 0u);
+    EXPECT_EQ(p.GetActiveClasses(), (std::vector<uint8>{ 8 }));
+    EXPECT_EQ(p.GetProjectedClass(), 8u);
+    EXPECT_FALSE(p.CompactSoleActiveIntoCap());   // now in range -> no-op
+}
+
+TEST(MulticlassProfile, CompactSoleActiveIntoCap_noopWhenInRangeOrMultiActive)
+{
+    MulticlassProfile p;
+    p.AddOwnedClass(1);
+    p.SetSlot(0, 1);
+    EXPECT_FALSE(p.CompactSoleActiveIntoCap());   // sole class already at slot 0
+    p.AddOwnedClass(8);
+    p.SetSlot(1, 8);
+    EXPECT_FALSE(p.CompactSoleActiveIntoCap());   // two active -> not sole
+}
+
+TEST(MulticlassProfile, HighestActiveSlotAboveCap_detectsOverCapClassDespiteHole)
+{
+    // The exact live-gate-5 regression: a class stranded above the cap with a hole below it. The filled
+    // count (2) equals the cap (2), so the original count-based eviction wrongly concluded "fits" and
+    // benched nothing. Position-based detection must flag the over-cap slot index.
+    MulticlassProfile p;
+    p.SetActiveCeiling(3);
+    p.AddOwnedClass(1);   // Warrior
+    p.AddOwnedClass(8);   // Mage
+    p.SetSlot(0, 1);
+    p.SetSlot(2, 8);      // Warrior@0, hole@1, Mage@2
+    p.SetActiveCeiling(2);
+    EXPECT_EQ(p.HighestActiveSlotAboveCap(), 2);   // Mage@2 is over-cap despite the count fitting the cap
+}
+
+TEST(MulticlassProfile, HighestActiveSlotAboveCap_negativeWhenAllWithinCap)
+{
+    MulticlassProfile p;
+    p.AddOwnedClass(1);
+    p.AddOwnedClass(8);
+    p.SetSlot(0, 1);
+    p.SetSlot(1, 8);       // Warrior@0, Mage@1 (cap default 3)
+    EXPECT_EQ(p.HighestActiveSlotAboveCap(), -1);
+    p.SetActiveCeiling(2);
+    EXPECT_EQ(p.HighestActiveSlotAboveCap(), -1);   // both still within cap 2
+    p.SetActiveCeiling(1);
+    EXPECT_EQ(p.HighestActiveSlotAboveCap(), 1);    // Mage@1 is now over-cap
+}
+
+TEST(MulticlassProfile, Load_rescuesLoneOverCapClassIntoSlotZero)
+{
+    MulticlassProfile p;
+    p.SetActiveCeiling(2);
+    p.Load({ { 8, 20, 0 } }, { 0, 0, 8 });   // Mage persisted at slot 2, holes 0,1; cap 2
+    EXPECT_EQ(p.GetActiveClasses(), (std::vector<uint8>{ 8 }));   // rescued, not empty
+    EXPECT_EQ(p.GetClassAtSlot(0), 8u);
+    EXPECT_EQ(p.GetProjectedClass(), 8u);
 }
 
 TEST(MulticlassProfile, GetOwnedClassMask_orsAllOwnedBits)

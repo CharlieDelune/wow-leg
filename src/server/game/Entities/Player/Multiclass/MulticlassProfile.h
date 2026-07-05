@@ -171,6 +171,22 @@ public:
             _slots[i] = classId;
         }
         RebuildActiveCache();
+
+        // Rescue a lone stranded class: if the cap trimmed away every slotted position (all in-range slots
+        // were holes) but a class was persisted at a slot >= _maxActive, a managed character would load with
+        // no active class. Activate the lowest such owned class into slot 0 so the projection always has one.
+        if (_active.empty())
+        {
+            for (uint8 classId : positionalSlots)
+            {
+                if (classId != 0 && HasOwnedClass(classId))
+                {
+                    _slots.assign(1, classId);
+                    RebuildActiveCache();
+                    break;
+                }
+            }
+        }
     }
 
     [[nodiscard]] uint32 GetOwnedClassMask() const
@@ -213,8 +229,104 @@ public:
     }
 
     // ---- active cap ----
+    // The effective cap on simultaneously active classes is DERIVED from two inputs:
+    //   _ceiling       -- the per-world Multiclass.MaxActiveClasses server limit (injected at load).
+    //   _unlockedSlots -- this character's earned capacity (progression ratchet; persisted).
+    // Effective cap = max(1, min(_unlockedSlots, _ceiling)), cached in _maxActive so every existing reader
+    // (SetSlot, Load, GetMaxActiveClasses) is unchanged.
+    static constexpr uint8 kSlotCapacityLevel2   = 5;    // 2nd active slot unlocks at this level
+    static constexpr uint8 kSlotCapacityLevelAll = 10;   // all remaining slots unlock at this level
+    static constexpr uint8 kSlotCapacityMax      = 11;   // absolute ceiling == MAX_CLASSES - 1
+
     [[nodiscard]] uint8 GetMaxActiveClasses() const { return _maxActive; }
-    void SetMaxActiveClasses(uint8 maxActive) { _maxActive = maxActive < 1 ? uint8(1) : maxActive; }
+    [[nodiscard]] uint8 GetUnlockedSlots() const { return _unlockedSlots; }
+    [[nodiscard]] uint8 GetActiveCeiling() const { return _ceiling; }
+
+    // Set the per-world ceiling input (floored at 1) and recompute the effective cap.
+    void SetActiveCeiling(uint8 ceiling)
+    {
+        _ceiling = ceiling < 1 ? uint8(1) : ceiling;
+        RecomputeMaxActive();
+    }
+
+    // Set this character's earned capacity (clamped to 1..kSlotCapacityMax) and recompute the effective cap.
+    void SetUnlockedSlots(uint8 unlocked)
+    {
+        _unlockedSlots = unlocked < 1 ? uint8(1) : (unlocked > kSlotCapacityMax ? kSlotCapacityMax : unlocked);
+        RecomputeMaxActive();
+    }
+
+    // Monotonic raise: bump earned capacity to `target` only if it exceeds the current value; never lowers.
+    // Returns true iff the value changed, so callers persist only on an actual raise. The level rule and
+    // future purchase/quest sources use this; the absolute GM override uses SetUnlockedSlots directly.
+    bool RaiseUnlockedTo(uint8 target)
+    {
+        if (target <= _unlockedSlots)
+            return false;
+        SetUnlockedSlots(target);   // clamps to 1..kSlotCapacityMax and recomputes the effective cap
+        return true;
+    }
+
+    // Relocate the sole remaining active class into slot 0 when a shrinking cap has stranded it above the
+    // cap (all of [0, _maxActive) is empty but the one active class sits at an index >= _maxActive). It
+    // cannot be benched -- a managed character must keep one active class -- so it is moved into range
+    // instead. No-op (returns false) unless exactly one class is active AND it is out of range. Pure slot
+    // move: the class stays active, only its position changes.
+    bool CompactSoleActiveIntoCap()
+    {
+        if (_active.size() != 1)
+            return false;
+        std::size_t from = _slots.size();
+        for (std::size_t i = 0; i < _slots.size(); ++i)
+            if (_slots[i] != 0)
+            {
+                from = i;
+                break;
+            }
+        if (from == _slots.size() || from < _maxActive)
+            return false;   // no active class, or it is already within the cap
+        uint8 const classId = _slots[from];
+        _slots[from] = 0;
+        _slots[0] = classId;   // slot 0 is guaranteed empty: this is the only filled slot and from >= 1
+        RebuildActiveCache();
+        return true;
+    }
+
+    // The highest slot index holding an active class at or above the cap -- an illegal position once the cap
+    // shrank -- or -1 if every filled slot is within [0, _maxActive). This is the over-cap DETECTION that
+    // drives eviction: POSITION-based (index >= cap), never filled-count-based. A positional hole can make
+    // the filled count fit the cap while a class still sits out of range (Warrior@0, hole@1, Mage@2, cap 2:
+    // count 2 == cap 2, yet Mage@2 is over-cap) -- the count-based check that shipped first missed exactly
+    // that. Returned as int so -1 is unambiguous.
+    [[nodiscard]] int HighestActiveSlotAboveCap() const
+    {
+        for (int i = int(_slots.size()) - 1; i >= int(_maxActive); --i)
+            if (_slots[i] != 0)
+                return i;
+        return -1;
+    }
+
+    // Furthest progression across the whole owned pool (active or benched) -- the level-rule input.
+    [[nodiscard]] uint8 GetMaxOwnedLevel() const
+    {
+        uint8 maxLevel = 0;
+        for (ClassProgress const& cp : _pool)
+            if (cp.level > maxLevel)
+                maxLevel = cp.level;
+        return maxLevel;
+    }
+
+    // The default level rule: active-slot capacity earned purely from character level (furthest
+    // progression). Pure policy with no dependencies, so it lives here where it is unit-testable in
+    // isolation; future purchase/quest sources bump capacity via the engine's monotonic GrantSlotCapacity.
+    [[nodiscard]] static uint8 SlotCapacityForLevel(uint8 level)
+    {
+        if (level < kSlotCapacityLevel2)
+            return 1;
+        if (level < kSlotCapacityLevelAll)
+            return 2;
+        return kSlotCapacityMax;
+    }
 
 private:
     // Rebuild the derived compact cache (non-empty classIds in slot order) from the positional slots.
@@ -243,10 +355,19 @@ private:
         return nullptr;
     }
 
+    // Recompute the cached effective cap from the two inputs. Both are floored at 1, so the result is >= 1.
+    void RecomputeMaxActive()
+    {
+        uint8 const derived = _unlockedSlots < _ceiling ? _unlockedSlots : _ceiling;
+        _maxActive = derived < 1 ? uint8(1) : derived;
+    }
+
     std::vector<ClassProgress> _pool;    // every owned class (active or benched)
     std::vector<uint8> _slots;           // positional: _slots[i] = class in slot i, 0 = empty; holes allowed
     std::vector<uint8> _active;          // derived cache: non-empty classIds in slot order; front() = projection
-    uint8 _maxActive = 3;                // active-set cap; injected from per-world config (P1b), 3 = fallback only
+    uint8 _unlockedSlots = kSlotCapacityMax;  // earned capacity (persisted ratchet); default = no per-char limit
+    uint8 _ceiling       = 3;                 // per-world server limit; default matches the legacy fallback
+    uint8 _maxActive     = 3;                 // derived cache = max(1, min(_unlockedSlots, _ceiling))
 };
 
 #endif // ACORE_MULTICLASS_PROFILE_H

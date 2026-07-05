@@ -36,7 +36,8 @@ public:
             { "setslot",     HandleSetSlot,     SEC_GAMEMASTER, Console::No },
             { "unsetslot",   HandleUnsetSlot,   SEC_GAMEMASTER, Console::No },
             { "setlevel",    HandleSetLevel,    SEC_GAMEMASTER, Console::No },
-            { "unlockclass", HandleUnlockClass, SEC_GAMEMASTER, Console::No }
+            { "unlockclass", HandleUnlockClass, SEC_GAMEMASTER, Console::No },
+            { "setcapacity", HandleSetCapacity, SEC_GAMEMASTER, Console::No }
         };
 
         static ChatCommandTable commandTable =
@@ -62,6 +63,8 @@ public:
         MulticlassProfile const& mc = player->GetMulticlassProfile();
         handler->PSendSysMessage("Multiclass (projected class {}, display level {}, max active {}):",
             mc.GetProjectedClass(), player->GetLevel(), mc.GetMaxActiveClasses());
+        handler->PSendSysMessage("  earned slots {}, server ceiling {}, effective cap {}",
+            uint32(mc.GetUnlockedSlots()), uint32(mc.GetActiveCeiling()), uint32(mc.GetMaxActiveClasses()));
 
         // Positional slots: show every position up to the cap so empty (unset) slots are visible as holes.
         for (uint8 slot = 0; slot < mc.GetMaxActiveClasses(); ++slot)
@@ -184,6 +187,7 @@ public:
         }
 
         mc.SetClassProgress(classId, level, mc.GetClassXp(classId));
+        Multiclass::GrantSlotCapacity(player, MulticlassProfile::SlotCapacityForLevel(mc.GetMaxOwnedLevel()));
         player->SaveMulticlassProfile();
         Multiclass::ReconcileDisplayLevel(player);
         handler->PSendSysMessage("Slot {} (class {}) level set to {}.", uint32(slot), uint32(classId), uint32(level));
@@ -211,6 +215,31 @@ public:
         Multiclass::UnlockClass(player, classId);
         player->SaveMulticlassProfile();   // persist the newly-owned class immediately (crash-safe)
         handler->PSendSysMessage("Class {} unlocked (benched). Slot it to make it active.", classId);
+        return true;
+    }
+
+    static bool HandleSetCapacity(ChatHandler* handler, uint8 n)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+
+        if (!sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
+        {
+            handler->SendErrorMessage("Multiclass is disabled.");
+            return true;
+        }
+
+        if (n < 1)
+        {
+            handler->SendErrorMessage("Usage: .multiclass setcapacity <n> (n >= 1)");
+            return true;
+        }
+
+        Multiclass::SetSlotCapacity(player, n);
+        MulticlassProfile const& mc = player->GetMulticlassProfile();
+        handler->PSendSysMessage("Earned slots set to {} (effective cap {} after the server ceiling).",
+            uint32(mc.GetUnlockedSlots()), uint32(mc.GetMaxActiveClasses()));
         return true;
     }
 };

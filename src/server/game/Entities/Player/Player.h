@@ -2690,6 +2690,10 @@ public:
     // Recompute the whole combined stat sheet in place (base pool + derived) WITHOUT the level-up heal:
     // used by live class-set changes and config reloads. Distinct from GiveLevel, which fully heals.
     void RecalculateMulticlassStats();
+    void ReapplyActiveCeiling();   // re-inject Multiclass.MaxActiveClasses live and evict over-cap slots
+    // Normalized per-world active-class ceiling: Multiclass.MaxActiveClasses, with 0 / >= MAX_CLASSES
+    // mapped to MAX_CLASSES - 1 (unlimited). Shared by _LoadMulticlassProfile and ReapplyActiveCeiling.
+    uint8 NormalizedActiveCeiling() const;
     Spell* m_spellModTakingSpell;
 
     float GetAverageItemLevel();

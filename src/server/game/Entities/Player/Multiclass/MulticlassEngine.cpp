@@ -30,6 +30,11 @@
 #include <algorithm>
 #include <unordered_map>
 
+// kSlotCapacityMax is hardcoded in the dependency-free MulticlassProfile header; assert it still tracks the
+// absolute active-slot ceiling (MAX_CLASSES - 1) here, where SharedDefines.h makes MAX_CLASSES visible.
+static_assert(MulticlassProfile::kSlotCapacityMax == MAX_CLASSES - 1,
+    "kSlotCapacityMax must equal MAX_CLASSES - 1");
+
 namespace
 {
     // A spell is class-attributable (bankable/ledgerable) only if it is a genuine class ability. Primary
@@ -320,6 +325,11 @@ namespace Multiclass
 
         // Always reconcile: even without a ding, the native XP bar must mirror the min class.
         ReconcileDisplayLevel(player);
+
+        // Progression may have unlocked active-slot capacity. Keyed off furthest progression (highest owned
+        // level), monotonic, and a no-op unless a threshold (level 5 / 10) was just crossed -- so the common
+        // per-kill path is a cheap compare with no DB write.
+        GrantSlotCapacity(player, MulticlassProfile::SlotCapacityForLevel(mc.GetMaxOwnedLevel()));
     }
 
     void ReconcileDisplayLevel(Player* player)
@@ -481,5 +491,61 @@ namespace Multiclass
         TeardownOutgoingClass(player, oldClassId, active);
         mc.ClearSlot(slot);                   // empty this slot in place (guaranteed to succeed by the guard)
         FinalizeActiveSetChange(player);
+    }
+
+    void EnforceActiveCapacity(Player* player)
+    {
+        MulticlassProfile& mc = player->GetMulticlassProfile();
+        // Enforce the cap by SLOT POSITION, mirroring SetSlot's `index >= _maxActive` rejection and Load's
+        // `i < _maxActive` trim: a class is over-cap when its slot INDEX is >= the effective cap, NOT merely
+        // when the filled COUNT exceeds it (a positional hole can make the count fit while a class still sits
+        // at an illegal index -- HighestActiveSlotAboveCap encodes that, count-based checks miss it). Bench
+        // over-cap slots highest-first so the lowest-slot (projected) classes survive.
+        bool relocated = false;
+        for (;;)
+        {
+            int const overCap = mc.HighestActiveSlotAboveCap();   // re-evaluated each pass: UnsetSlot mutates
+            if (overCap < 0)
+                break;   // every filled slot is within [0, cap)
+
+            if (mc.GetActiveClasses().size() > 1)
+            {
+                UnsetSlot(player, uint8(overCap));   // bench it (teardown banks the book, keeps it owned)
+            }
+            else
+            {
+                // The sole active class is stranded above the cap; benching it would strip the character's
+                // only class (UnsetSlot refuses, which would spin this loop). Relocate it into range instead
+                // -- it stays active (no teardown), only its slot changes -- then persist below.
+                if (mc.CompactSoleActiveIntoCap())
+                    relocated = true;
+                break;
+            }
+        }
+        if (relocated)
+        {
+            // The relocated class kept its identity (only its slot moved), so the projected classId is
+            // unchanged and this Sync is a defensive no-op; the real persistence need is the moved slot row.
+            player->SyncMulticlassProjection();
+            player->SaveMulticlassProfile();
+        }
+    }
+
+    void GrantSlotCapacity(Player* player, uint8 target)
+    {
+        // Monotonic ratchet (never lowers); persist only on an actual raise -- this runs on every XP award,
+        // so the common no-raise path must stay a cheap compare with no DB write. The monotonic decision lives
+        // on MulticlassProfile (pure, unit-tested); future purchase/quest sources call this same entry point.
+        if (player->GetMulticlassProfile().RaiseUnlockedTo(target))
+            player->SaveMulticlassProfile();
+    }
+
+    void SetSlotCapacity(Player* player, uint8 n)
+    {
+        MulticlassProfile& mc = player->GetMulticlassProfile();
+        // Absolute override (GM/testing): may raise OR lower. Lowering can strand active classes, so evict.
+        mc.SetUnlockedSlots(n);            // clamped to 1..kSlotCapacityMax, recomputes the effective cap
+        player->SaveMulticlassProfile();
+        EnforceActiveCapacity(player);     // if the new cap is below the filled count, bench the excess
     }
 }
