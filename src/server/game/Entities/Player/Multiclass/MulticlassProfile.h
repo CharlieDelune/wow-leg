@@ -145,6 +145,17 @@ public:
         return true;
     }
 
+    // Replace the entire active set with `order` — the new compact, slot-order list (slot 0 first, no
+    // holes). Unlike SetSlot/ClearSlot (single-slot deltas) this is a whole-set rewrite, so the class
+    // panel can apply an arbitrary add/remove/reorder in one shot without transient duplicate-slot
+    // conflicts. The caller (ValidateSetOrderRequest / MulticlassEngine::SetActiveOrder) has already
+    // checked ownership, cap, duplicates, and non-empty; every entry is a valid owned non-zero classId.
+    void SetActiveOrder(std::vector<uint8> const& order)
+    {
+        _slots = order;
+        RebuildActiveCache();
+    }
+
     // Reset and repopulate from persisted data. `pool` is every owned class; `positionalSlots[i]` is the
     // classId in slot i (0 == empty), exactly as stored — interior holes are preserved. Each non-empty
     // entry must be owned; entries at or beyond the current cap, and duplicates, are dropped (benched).

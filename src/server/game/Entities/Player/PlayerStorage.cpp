@@ -27,6 +27,7 @@
 #include "Common.h"
 #include "Config.h"
 #include "DatabaseEnv.h"
+#include "DBCStores.h"
 #include "DisableMgr.h"
 #include "GameEventMgr.h"
 #include "GameObjectAI.h"
@@ -5128,7 +5129,16 @@ void Player::SyncMulticlassProjection()
 {
     uint8 const projected = m_multiclassProfile.GetProjectedClass();
     if (projected != 0 && projected != getClass())
+    {
         SetByteValue(UNIT_FIELD_BYTES_0, 1, projected);
+
+        // Display power follows the projected class so the client resource bar switches live
+        // (UNIT_DISPLAYPOWER). Skip while shapeshifted: the form's power dominates (cat/bear).
+        if (GetShapeshiftForm() == FORM_NONE)
+            if (ChrClassesEntry const* cEntry = sChrClassesStore.LookupEntry(projected))
+                if (cEntry->powerType < MAX_POWERS && uint32(getPowerType()) != cEntry->powerType)
+                    setPowerType(Powers(cEntry->powerType));
+    }
 }
 
 void Player::SaveMulticlassProfile()

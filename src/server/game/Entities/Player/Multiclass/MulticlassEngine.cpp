@@ -16,6 +16,7 @@
  */
 
 #include "MulticlassEngine.h"
+#include "MulticlassClientProtocol.h"
 #include "MulticlassSpells.h"
 #include "Chat.h"
 #include "DatabaseEnv.h"
@@ -26,6 +27,7 @@
 #include "SpellMgr.h"
 #include "StringFormat.h"
 #include "World.h"
+#include "WorldPacket.h"
 #include "WorldSession.h"
 #include <algorithm>
 #include <unordered_map>
@@ -88,15 +90,21 @@ namespace Multiclass
         CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
         for (uint8 classId : player->GetMulticlassProfile().GetActiveClasses())
         {
+            // Skip a class absent from the in-memory ledger. During a multi-class SetActiveOrder the earlier
+            // leavers are banked then erased from the map while still transiently in the active set, so
+            // DELETE-ing here would permanently wipe their banked spellbook (a re-activation would restore
+            // nothing). A class that legitimately knows no spells stays PRESENT with an empty set, so it is
+            // not skipped and its "no rows" state still persists.
+            auto itr = ledger.find(classId);
+            if (itr == ledger.end())
+                continue;
+
             trans->Append(Acore::StringFormat(
                 "DELETE FROM `character_multiclass_spell` WHERE `guid` = {} AND `classId` = {}", low, classId));
-
-            auto itr = ledger.find(classId);
-            if (itr != ledger.end())
-                for (uint32 spellId : itr->second)
-                    trans->Append(Acore::StringFormat(
-                        "INSERT INTO `character_multiclass_spell` (`guid`, `classId`, `spellId`) VALUES ({}, {}, {})",
-                        low, classId, spellId));
+            for (uint32 spellId : itr->second)
+                trans->Append(Acore::StringFormat(
+                    "INSERT INTO `character_multiclass_spell` (`guid`, `classId`, `spellId`) VALUES ({}, {}, {})",
+                    low, classId, spellId));
         }
         // Sync commit when a later step in the SAME world tick reads these rows back: SwapSlotClass banks
         // the outgoing class right before a possible re-activation, and ActivateClass's remembered-branch
@@ -490,6 +498,7 @@ namespace Multiclass
             // nothing else would recompute. (A level-changing change already recomputed via GiveLevel; this
             // idempotent second pass is harmless.)
             player->RecalculateMulticlassStats();
+            SendClientState(player);
         }
     }
 
@@ -523,6 +532,40 @@ namespace Multiclass
 
         TeardownOutgoingClass(player, oldClassId, active);
         mc.ClearSlot(slot);                   // empty this slot in place (guaranteed to succeed by the guard)
+        FinalizeActiveSetChange(player);
+    }
+
+    // Whole-set rewrite from the class panel: `order` is the new active set in slot order (slot 0 first),
+    // already validated (owned, distinct, within cap, non-empty). Subsumes the panel's activate / bench /
+    // promote / reorder in one atomic op — a permutation SwapSlotClass/UnsetSlot can't express.
+    void SetActiveOrder(Player* player, std::vector<uint8> const& order)
+    {
+        MulticlassProfile& mc = player->GetMulticlassProfile();
+        std::vector<uint8> const oldActive = mc.GetActiveClasses();   // snapshot before the change
+
+        auto const inOrder = [&order](uint8 cid)
+        { return std::find(order.begin(), order.end(), cid) != order.end(); };
+        auto const wasActive = [&oldActive](uint8 cid)
+        { return std::find(oldActive.begin(), oldActive.end(), cid) != oldActive.end(); };
+
+        // Classes leaving the active set: bank their book, strip exclusive spells/skills, bench talents.
+        // Reference is the pre-change snapshot, matching SwapSlotClass/UnsetSlot; a spell/skill shared only
+        // between two co-leaving classes is caught by FinalizeActiveSetChange's prune, the same backstop the
+        // single-delta paths already lean on.
+        for (uint8 cid : oldActive)
+            if (!inOrder(cid))
+                TeardownOutgoingClass(player, cid, oldActive);
+
+        // Place the whole new set at once — stayers may shift position, entering classes take their slot.
+        // A one-shot rewrite avoids the transient duplicate-slot conflicts a sequence of SetSlot moves hits.
+        mc.SetActiveOrder(order);
+
+        // Classes entering the active set: learn/restore their kit. ActivateClass re-runs SetSlot, now
+        // idempotent (the class already occupies that slot), so it performs only the learn/talent work.
+        for (std::size_t i = 0; i < order.size(); ++i)
+            if (!wasActive(order[i]))
+                ActivateClass(player, static_cast<uint8>(i), order[i]);
+
         FinalizeActiveSetChange(player);
     }
 
@@ -580,5 +623,17 @@ namespace Multiclass
         mc.SetUnlockedSlots(n);            // clamped to 1..kSlotCapacityMax, recomputes the effective cap
         player->SaveMulticlassProfile();
         EnforceActiveCapacity(player);     // if the new cap is below the filled count, bench the excess
+    }
+
+    void SendClientState(Player* player)
+    {
+        if (!player || !player->GetSession())
+            return;
+        bool const enabled = sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE);
+        std::string payload(kClientMsgTag);
+        payload += SerializeStateSnapshot(player->GetMulticlassProfile(), enabled);
+        WorldPacket data;
+        ChatHandler::BuildChatPacket(data, CHAT_MSG_WHISPER, LANG_ADDON, player, player, payload);
+        player->GetSession()->SendPacket(&data);
     }
 }

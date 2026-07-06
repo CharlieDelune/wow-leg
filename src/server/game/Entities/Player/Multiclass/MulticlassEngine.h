@@ -23,6 +23,7 @@
 #include <array>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 class Player;
 
@@ -40,6 +41,7 @@ namespace Multiclass
     void ActivateClass(Player* player, uint8 slot, uint8 classId);
     void SwapSlotClass(Player* player, uint8 slot, uint8 newClassId);
     void UnsetSlot(Player* player, uint8 slot);
+    void SetActiveOrder(Player* player, std::vector<uint8> const& order);   // whole-set rewrite (class panel)
     void GrantSlotCapacity(Player* player, uint8 target);   // monotonic: raise earned capacity, never lower
     void SetSlotCapacity(Player* player, uint8 n);          // absolute: set earned capacity, evict if lower
     void EnforceActiveCapacity(Player* player);             // bench over-cap slots (highest index first)
@@ -48,6 +50,7 @@ namespace Multiclass
     void AttributeLearnedSpell(Player* player, uint32 spellId);
     void AttributeForgotSpell(Player* player, uint32 spellId);
     void BackfillActiveLedgers(Player* player);
+    void SendClientState(Player* player);
 }
 
 #endif

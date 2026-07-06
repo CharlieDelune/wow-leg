@@ -1,0 +1,5 @@
+# overlay/ byte-mirrors the client MPQ patch — its exact bytes ARE the deliverable.
+# The repo-root `* text eol=lf` would LF-normalize the CRLF FrameXML and mangle the
+# binary DBCs on commit/checkout; -text disables all EOL/text conversion for the tree.
+# This file lives at client-patch/ (not inside overlay/) so it never leaks into the MPQ.
+overlay/** -text
