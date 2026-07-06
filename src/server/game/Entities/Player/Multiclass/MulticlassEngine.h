@@ -45,6 +45,7 @@ namespace Multiclass
     void SetActiveOrder(Player* player, std::vector<uint8> const& order);   // whole-set rewrite (class panel)
     void GrantSlotCapacity(Player* player, uint8 target);   // monotonic: raise earned capacity, never lower
     void SetSlotCapacity(Player* player, uint8 n);          // absolute: set earned capacity, evict if lower
+    void SetManagedLevel(Player* player, uint8 level);      // GM level command: set every active class to level
     void EnforceActiveCapacity(Player* player);             // bench over-cap slots (highest index first)
     void ReconcileDisplayLevel(Player* player);
     void RouteExperience(Player* player, uint32 effectiveXp);

@@ -19,6 +19,15 @@ end
 
 hooksecurefunc("PaperDollFrame_SetLevel", ApplyPaperDollLevel);
 
+-- PaperDollFrame_SetLevel only fires on a level change or when the sheet opens, so a class swap made with
+-- the sheet already open would leave the label stale. A self-swap pushes a self-peer, so re-stamp on the
+-- peer refresh while the paperdoll tab is showing.
+MulticlassIdentity.OnUpdate(function()
+	if ( PaperDollFrame:IsShown() ) then
+		ApplyPaperDollLevel();
+	end
+end);
+
 -- Surface #2: unit mouseover/target tooltip. Unit tooltip content is built client-side, so the
 -- only Lua seam is the post-build OnTooltipSetUnit script; find the line carrying the native
 -- class word and splice in the composite label with a plain (non-pattern) substring replace. A

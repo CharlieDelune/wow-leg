@@ -342,11 +342,13 @@ namespace Multiclass
 
         // GetActiveClassesAtMinLevel is a snapshot of the pre-award receivers (a copy), so mutating the
         // profile inside the loop is safe; every tied-lowest active class gets the FULL award.
+        bool leveled = false;
         for (uint8 classId : mc.GetActiveClassesAtMinLevel())
         {
             ClassProgress cp{ classId, mc.GetClassLevel(classId), mc.GetClassXp(classId) };
             if (ApplyXpToClass(cp, effectiveXp, maxLevel, xpToNext) > 0)
             {
+                leveled = true;
                 if (ChrClassesEntry const* ce = sChrClassesStore.LookupEntry(classId))
                     ChatHandler(player->GetSession()).PSendSysMessage(
                         "Your {} is now level {}!", ce->name[loc], uint32(cp.level));
@@ -371,6 +373,12 @@ namespace Multiclass
         if (projected != 0 && mc.GetClassLevel(projected) != projectedLevelBefore
             && player->GetLevel() == displayLevelBefore)
             player->RecomputeProjectedTalentView();
+
+        // A ding also changes what the class-swap panel shows -- per-class levels and (at level 5/10) the
+        // active-slot cap -- so push a fresh snapshot to refresh an open panel live. Gated on an actual ding
+        // so the common per-kill XP path doesn't emit an addon message every tick.
+        if (leveled)
+            SendClientState(player);
     }
 
     void ReconcileDisplayLevel(Player* player)
@@ -640,6 +648,21 @@ namespace Multiclass
         // on MulticlassProfile (pure, unit-tested); future purchase/quest sources call this same entry point.
         if (player->GetMulticlassProfile().RaiseUnlockedTo(target))
             player->SaveMulticlassProfile();
+    }
+
+    void SetManagedLevel(Player* player, uint8 level)
+    {
+        // GM level command applied to a managed character: set EVERY active class to the target level, so the
+        // character genuinely is that level across the classes it plays and the native level -- derived from the
+        // min active level -- stops snapping back on the next XP tick. Capacity re-grants and the panel refreshes.
+        if (!sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
+            return;
+        MulticlassProfile& mc = player->GetMulticlassProfile();
+        for (uint8 const classId : mc.GetActiveClasses())
+            mc.SetClassProgress(classId, level, 0);
+        GrantSlotCapacity(player, MulticlassProfile::SlotCapacityForLevel(mc.GetMaxOwnedLevel()));
+        player->SaveMulticlassProfile();
+        SendClientState(player);
     }
 
     void SetSlotCapacity(Player* player, uint8 n)

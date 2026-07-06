@@ -21,6 +21,7 @@
 #include "CommandScript.h"
 #include "DBCStores.h"
 #include "DatabaseEnv.h"
+#include "MulticlassEngine.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -256,6 +257,7 @@ public:
             player->GiveLevel(newLevel);
             player->InitTalentForLevel();
             player->SetUInt32Value(PLAYER_XP, 0);
+            Multiclass::SetManagedLevel(player, static_cast<uint8>(newLevel));
 
             if (handler->needReportToTarget(player))
             {
