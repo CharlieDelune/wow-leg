@@ -30,12 +30,13 @@ namespace Multiclass
     // On-wire body prefix shared by every MCLS addon-channel message: "MCLS\tpayload".
     inline constexpr std::string_view kClientMsgTag = "MCLS\t";
 
-    enum class ClientVerb : uint8 { Invalid, Hello, SetOrder };
+    enum class ClientVerb : uint8 { Invalid, Hello, SetOrder, Whois };
 
     struct ClientRequest
     {
         ClientVerb verb = ClientVerb::Invalid;
-        std::vector<uint8> order;   // SetOrder: desired active classIds in slot order (slot 0 first)
+        std::vector<uint8> order;          // SetOrder: desired active classIds in slot order (slot 0 first)
+        std::vector<std::string> names;    // Whois: player names to resolve
     };
 
     enum class DenyReason : uint8
@@ -94,6 +95,13 @@ namespace Multiclass
                 req.order = std::move(order);
             }
         }
+        else if (tok[0] == "whois" && tok.size() >= 2)
+        {
+            req.verb = ClientVerb::Whois;
+            req.names.reserve(tok.size() - 1);
+            for (std::size_t t = 1; t < tok.size(); ++t)
+                req.names.emplace_back(tok[t]);
+        }
         return req;
     }
 
@@ -149,6 +157,29 @@ namespace Multiclass
             out += std::to_string(slot);
         }
         return out;
+    }
+
+    // "peer <name> <activeClassId> ..." — active ids in slot order; empty list means unknown/offline.
+    inline std::string SerializePeer(std::string_view name, std::vector<uint8> const& active)
+    {
+        std::string out = "peer ";
+        out.append(name);
+        for (uint8 const classId : active)
+        {
+            out += ' ';
+            out += std::to_string(classId);
+        }
+        return out;
+    }
+
+    // Class mask over a player's active set using the /who bit convention (bit == classId, matching
+    // MiscHandler's `classmask & (1 << classId)`), NOT the (classId - 1) convention used elsewhere.
+    inline uint32 WhoClassMask(std::vector<uint8> const& active)
+    {
+        uint32 mask = 0;
+        for (uint8 const classId : active)
+            mask |= (1u << classId);
+        return mask;
     }
 
     inline char const* DenyReasonText(DenyReason reason)

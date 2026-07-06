@@ -18,9 +18,11 @@
 #include "MulticlassEngine.h"
 #include "MulticlassClientProtocol.h"
 #include "MulticlassSpells.h"
+#include "CellImpl.h"
 #include "Chat.h"
 #include "DatabaseEnv.h"
 #include "DBCStores.h"
+#include "GridNotifiers.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "SharedDefines.h"
@@ -31,6 +33,12 @@
 #include "WorldSession.h"
 #include <algorithm>
 #include <unordered_map>
+
+/// @todo: this import is not necessary for compilation and marked as unused by the IDE
+//  however, for some reasons removing it would cause a damn linking issue
+//  there is probably some underlying problem with imports which should properly addressed
+//  see: https://github.com/azerothcore/azerothcore-wotlk/issues/9766
+#include "GridNotifiersImpl.h"
 
 // kSlotCapacityMax is hardcoded in the dependency-free MulticlassProfile header; assert it still tracks the
 // absolute active-slot ceiling (MAX_CLASSES - 1) here, where SharedDefines.h makes MAX_CLASSES visible.
@@ -468,6 +476,23 @@ namespace Multiclass
             player->SetMulticlassInOrchestration(false);
         }
 
+        // Tell the players who currently SEE this character about its new active set, so their composite
+        // labels (tooltip/inspect/etc.) update live. Same audience that already gets its field updates.
+        void PushPeerToObservers(Player* player)
+        {
+            if (!player->IsInWorld())
+                return;
+            std::vector<uint8> const& active = player->GetMulticlassProfile().GetActiveClasses();
+            std::string const name = player->GetName();
+            float const range = player->GetVisibilityRange();
+            std::list<Player*> observers;
+            Acore::AnyPlayerInObjectRangeCheck check(player, range);
+            Acore::PlayerListSearcher<Acore::AnyPlayerInObjectRangeCheck> searcher(player, observers, check);
+            Cell::VisitObjects(player, searcher, range);
+            for (Player* obs : observers)
+                SendPeer(obs, name, active);
+        }
+
         // Reconcile skills/gear/level/projection to the now-final active set and persist, then recompute the
         // combined stat sheet in place (preserving vitals). Shared by SwapSlotClass and UnsetSlot.
         void FinalizeActiveSetChange(Player* player)
@@ -499,6 +524,7 @@ namespace Multiclass
             // idempotent second pass is harmless.)
             player->RecalculateMulticlassStats();
             SendClientState(player);
+            PushPeerToObservers(player);   // P4b: observers' composite labels update live on swap
         }
     }
 
@@ -635,5 +661,15 @@ namespace Multiclass
         WorldPacket data;
         ChatHandler::BuildChatPacket(data, CHAT_MSG_WHISPER, LANG_ADDON, player, player, payload);
         player->GetSession()->SendPacket(&data);
+    }
+
+    void SendPeer(Player* recipient, std::string_view name, std::vector<uint8> const& active)
+    {
+        if (!recipient || !recipient->GetSession())
+            return;
+        std::string payload = std::string(kClientMsgTag) + SerializePeer(name, active);
+        WorldPacket data;
+        ChatHandler::BuildChatPacket(data, CHAT_MSG_WHISPER, LANG_ADDON, recipient, recipient, payload);
+        recipient->GetSession()->SendPacket(&data);
     }
 }

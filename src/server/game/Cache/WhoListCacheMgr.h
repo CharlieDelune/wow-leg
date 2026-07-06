@@ -26,7 +26,8 @@ class WhoListPlayerInfo
 {
 public:
     WhoListPlayerInfo(ObjectGuid guid, TeamId team, AccountTypes security, uint8 level, uint8 clss, uint8 race, uint32 zoneid, uint8 gender, bool visible, std::wstring const& widePlayerName,
-        std::wstring const& wideGuildName, std::string const& playerName, std::string const& guildName) :
+        std::wstring const& wideGuildName, std::string const& playerName, std::string const& guildName,
+        uint32 activeClassMask) :
         _guid(guid),
         _team(team),
         _security(security),
@@ -39,7 +40,8 @@ public:
         _widePlayerName(widePlayerName),
         _wideGuildName(wideGuildName),
         _playerName(playerName),
-        _guildName(guildName) { }
+        _guildName(guildName),
+        _activeClassMask(activeClassMask) { }
 
     ObjectGuid GetGuid() const { return _guid; }
     TeamId GetTeamId() const { return _team; }
@@ -54,6 +56,7 @@ public:
     std::wstring const& GetWideGuildName() const { return _wideGuildName; }
     std::string const& GetPlayerName() const { return _playerName; }
     std::string const& GetGuildName() const { return _guildName; }
+    uint32 GetActiveClassMask() const { return _activeClassMask; }
 
 private:
     ObjectGuid _guid;
@@ -69,6 +72,7 @@ private:
     std::wstring _wideGuildName;
     std::string _playerName;
     std::string _guildName;
+    uint32 _activeClassMask;
 };
 
 using WhoListInfoVector = std::vector<WhoListPlayerInfo>;

@@ -143,6 +143,8 @@ VehicleMenuBar.xml
 AlternatePowerBar.xml
 AnimationSystem.lua
 
+MulticlassIdentity.lua
 MulticlassFrame.xml
+MulticlassIdentityHooks.lua
 ## add new modules above here
 LocalizationPost.xml

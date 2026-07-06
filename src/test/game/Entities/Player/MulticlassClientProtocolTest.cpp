@@ -95,3 +95,27 @@ TEST(MulticlassClientProtocolTest, SerializeSnapshot_disabled)
     MulticlassProfile p = MakeProfile();
     EXPECT_EQ(SerializeStateSnapshot(p, /*enabled*/ false).substr(0, 9), "state 1 0");
 }
+
+TEST(MulticlassClientProtocolTest, ParseWhois)
+{
+    ClientRequest r = ParseClientRequest("whois Alice Bob");
+    EXPECT_EQ(r.verb, ClientVerb::Whois);
+    ASSERT_EQ(r.names.size(), 2u);
+    EXPECT_EQ(r.names[0], "Alice");
+    EXPECT_EQ(r.names[1], "Bob");
+    EXPECT_EQ(ParseClientRequest("whois").verb, ClientVerb::Invalid);   // needs >= 1 name
+}
+
+TEST(MulticlassClientProtocolTest, SerializePeer)
+{
+    EXPECT_EQ(SerializePeer("Alice", {1, 8, 11}), "peer Alice 1 8 11");
+    EXPECT_EQ(SerializePeer("Bob", {}), "peer Bob");   // unknown/offline -> empty id list
+}
+
+TEST(MulticlassClientProtocolTest, WhoClassMask_matchesWhoBitConvention)
+{
+    // WHO filter tests `classmask & (1 << classId)`; the active mask must use the same convention.
+    EXPECT_EQ(WhoClassMask({1}), 1u << 1);                    // Warrior only
+    EXPECT_EQ(WhoClassMask({1, 8, 11}), (1u << 1) | (1u << 8) | (1u << 11));
+    EXPECT_EQ(WhoClassMask({}), 0u);
+}

@@ -19,6 +19,7 @@
 #include "MulticlassClientProtocol.h"
 #include "MulticlassEngine.h"
 #include "MulticlassProfile.h"
+#include "ObjectAccessor.h"
 #include "Player.h"
 #include "ScriptMgr.h"
 #include "World.h"
@@ -63,6 +64,20 @@ public:
                 }
                 Multiclass::SetActiveOrder(player, req.order);
                 // FinalizeActiveSetChange pushes fresh state; none needed here.
+                break;
+            }
+            case Multiclass::ClientVerb::Whois:
+            {
+                if (!enabled)
+                    break;   // feature off: no peer replies (client stays byte-vanilla)
+                for (std::string const& name : req.names)
+                {
+                    Player* target = ObjectAccessor::FindPlayerByName(name, false);
+                    if (target)
+                        Multiclass::SendPeer(player, name, target->GetMulticlassProfile().GetActiveClasses());
+                    else
+                        Multiclass::SendPeer(player, name, {});   // unknown/offline -> empty peer
+                }
                 break;
             }
             case Multiclass::ClientVerb::Invalid:

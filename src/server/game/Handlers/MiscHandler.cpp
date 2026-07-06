@@ -314,9 +314,9 @@ void WorldSession::HandleWhoOpcode(WorldPacket& recvData)
             continue;
         }
 
-        // check if class matches classmask
+        // check if class matches classmask (P4b: any ACTIVE class, not just the projected one)
         uint8 class_ = target.GetClass();
-        if (!(classmask & (1 << class_)))
+        if (!(classmask & target.GetActiveClassMask()))
         {
             continue;
         }

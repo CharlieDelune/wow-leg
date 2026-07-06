@@ -21,6 +21,7 @@
 #include "MulticlassLogic.h"
 #include "ObjectGuid.h"
 #include <array>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -51,6 +52,7 @@ namespace Multiclass
     void AttributeForgotSpell(Player* player, uint32 spellId);
     void BackfillActiveLedgers(Player* player);
     void SendClientState(Player* player);
+    void SendPeer(Player* recipient, std::string_view name, std::vector<uint8> const& active);
 }
 
 #endif

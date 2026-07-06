@@ -79,15 +79,6 @@ local CLASS_TOKEN = { [1] = "WARRIOR", [2] = "PALADIN", [3] = "HUNTER", [4] = "R
                        [6] = "DEATHKNIGHT", [7] = "SHAMAN", [8] = "MAGE", [9] = "WARLOCK", [11] = "DRUID" };
 local ALL_CLASSES = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 11 };
 
--- Canonical, context-independent class abbreviations. Hardcoded so a class always renders the same
--- regardless of what else is active (War is always Warrior, Wlk always Warlock); computed truncation is
--- only a fallback for a class with no entry here (e.g. one a mod adds). Both tiers are collision-free; the
--- short tier is 1 char except where a collision forces 2 (Wl/Pr/DK).
-local CLASS_ABBR3 = { [1] = "War", [2] = "Pld", [3] = "Hnt", [4] = "Rog", [5] = "Prs",
-                       [6] = "DK", [7] = "Shm", [8] = "Mag", [9] = "Wlk", [11] = "Drd" };
-local CLASS_ABBR2 = { [1] = "W", [2] = "P", [3] = "H", [4] = "R", [5] = "Pr",
-                       [6] = "DK", [7] = "S", [8] = "M", [9] = "Wl", [11] = "D" };
-
 -- Square class emblems from the character-create sheet (4x4 grid), keyed by classId.
 local CLASS_ICON_FILE = "Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Classes";
 local CLASS_ICON_TC = {
@@ -104,29 +95,6 @@ end
 
 local function ClassColor(id)
 	return RAID_CLASS_COLORS[CLASS_TOKEN[id]] or { r = 1, g = 1, b = 1 };
-end
-
--- Composite identity label. full @1 | 3-char @2-3 | short @4-5 | Adventurer @6+.
-local function Abbrev(id, width)
-	local hard = (width == 3) and CLASS_ABBR3 or CLASS_ABBR2;
-	if ( hard[id] ) then
-		return hard[id];
-	end
-	local letters = ClassName(id):gsub("%s+", ""):sub(1, width);   -- fallback: truncate the name
-	return letters:sub(1, 1):upper() .. letters:sub(2):lower();
-end
-
-local function IdentityLabel(order)
-	local n = #order;
-	if ( n == 0 ) then return "" end
-	if ( n == 1 ) then return ClassName(order[1]) end
-	if ( n >= 6 ) then return "Adventurer" end
-	local width = (n <= 3) and 3 or 2;
-	local parts = {};
-	for _, id in ipairs(order) do
-		table.insert(parts, Abbrev(id, width));
-	end
-	return table.concat(parts, "/");
 end
 
 -- Derive (owned map, active classIds in slot order) from the last state snapshot.
@@ -286,7 +254,7 @@ function MulticlassUI:Render()
 		tiles[i]:Hide();
 	end
 
-	MulticlassFrameIdentity:SetText("|cffffd100" .. IdentityLabel(order) .. "|r");
+	MulticlassFrameIdentity:SetText("|cffffd100" .. MulticlassIdentity.ColorLabel(order) .. "|r");
 	MulticlassFrameHint:SetText("|cffc0c0c0" .. #order .. " of " .. st.cap .. " active|r"
 		.. "\n|cff808080Click a class to activate or deactivate|r");
 end
