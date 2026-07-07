@@ -7,6 +7,42 @@ BINDING_NAME_TOGGLEMULTICLASS = "Toggle class panel";
 
 UIPanelWindows["MulticlassFrame"] = { area = "left", pushable = 0, whileDead = 1 };
 
+-- Tab registry: id -> { frame, onShow }. RegisterTab is the seam SP2-SP4 attach to.
+local TABS = {};
+local TAB_ORDER = { "classes", "talents", "glyphs", "loadouts" };  -- index == XML tab id
+local TAB_INDEX = { classes = 1, talents = 2, glyphs = 3, loadouts = 4 };
+
+function MulticlassUI:RegisterTab(id, contentFrame, onShow)
+	TABS[id] = { frame = contentFrame, onShow = onShow };
+end
+
+function MulticlassUI:SelectTab(id)
+	if ( not TABS[id] ) then return end
+	self.activeTab = id;
+	for key, t in pairs(TABS) do
+		if ( key == id ) then t.frame:Show() else t.frame:Hide() end
+	end
+	PanelTemplates_SetTab(MulticlassFrame, TAB_INDEX[id]);
+	if ( TABS[id].onShow ) then TABS[id].onShow() end
+end
+
+-- The tab buttons inherit CharacterFrameTabButtonTemplate for its textures, but its OnClick/OnShow
+-- are bound to CharacterFrame; override them here so they drive OUR frame instead.
+function MulticlassUI:InitTabs()
+	local buttons = { MulticlassFrameTab1, MulticlassFrameTab2, MulticlassFrameTab3, MulticlassFrameTab4 };
+	for _, tab in ipairs(buttons) do
+		tab:SetScript("OnClick", function(self) MulticlassUI:SelectTab(TAB_ORDER[self:GetID()]) end);
+		tab:SetScript("OnShow", function(self) PanelTemplates_TabResize(self, 0) end);
+		PanelTemplates_TabResize(tab, 0);
+	end
+	PanelTemplates_SetNumTabs(MulticlassFrame, 4);
+
+	MulticlassUI:RegisterTab("classes", MulticlassClassesTab, function() MulticlassUI:Render() end);
+	MulticlassUI:RegisterTab("talents", MulticlassTalentsTab, nil);
+	MulticlassUI:RegisterTab("glyphs", MulticlassGlyphsTab, nil);
+	MulticlassUI:RegisterTab("loadouts", MulticlassLoadoutsTab, nil);
+end
+
 local function Send(payload)
 	SendAddonMessage(PREFIX, payload, "WHISPER", UnitName("player"));
 end
@@ -41,14 +77,25 @@ local function ParseState(message)
 	return t;
 end
 
+function MulticlassUI:UpdatePortrait()
+	SetPortraitTexture(MulticlassFramePortrait, "player");
+end
+
 function MulticlassUI:OnFrameLoad(frame)
 	frame:RegisterEvent("CHAT_MSG_ADDON");
 	frame:RegisterEvent("PLAYER_ENTERING_WORLD");
+	frame:RegisterEvent("UNIT_PORTRAIT_UPDATE");
+	self:InitTabs();
 end
 
 function MulticlassUI:OnFrameEvent(event, arg1, arg2)
 	if ( event == "PLAYER_ENTERING_WORLD" ) then
 		Send("hello");                 -- request the authoritative snapshot on login
+		self:UpdatePortrait();
+	elseif ( event == "UNIT_PORTRAIT_UPDATE" ) then
+		if ( arg1 == "player" ) then
+			self:UpdatePortrait();
+		end
 	elseif ( event == "CHAT_MSG_ADDON" ) then
 		local prefix, message = arg1, arg2;
 		if ( prefix ~= PREFIX ) then
@@ -57,8 +104,8 @@ function MulticlassUI:OnFrameEvent(event, arg1, arg2)
 		local verb = string.match(message, "^(%S+)");
 		if ( verb == "state" ) then
 			self.state = ParseState(message);
-			if ( MulticlassFrame:IsShown() ) then
-				self:Render();
+			if ( MulticlassFrame:IsShown() and self.activeTab and TABS[self.activeTab] and TABS[self.activeTab].onShow ) then
+				TABS[self.activeTab].onShow();
 			end
 			if ( type(UpdateMicroButtons) == "function" ) then
 				UpdateMicroButtons();
@@ -74,7 +121,8 @@ end
 
 function MulticlassUI:OnShow()
 	Send("hello");                     -- refresh on open
-	self:Render();
+	self:UpdatePortrait();
+	self:SelectTab(self.activeTab or "classes");
 end
 
 local CLASS_TOKEN = { [1] = "WARRIOR", [2] = "PALADIN", [3] = "HUNTER", [4] = "ROGUE", [5] = "PRIEST",
@@ -156,13 +204,13 @@ end
 
 -- 5-column grid of narrow tiles; the class name wraps ("Death Knight (80)" -> "Death" / "Knight (80)").
 local COLS, TILE_W, TILE_H = 5, 70, 72;
-local START_X, START_Y, DX, DY = 20, -66, 76, 80;
+local START_X, START_Y, DX, DY = 20, -10, 76, 80;
 
 local tiles = {};
 
 local function EnsureTile(i)
 	if ( tiles[i] ) then return tiles[i] end
-	local b = CreateFrame("Button", "MulticlassTile" .. i, MulticlassFrame);
+	local b = CreateFrame("Button", "MulticlassTile" .. i, MulticlassClassesTab);
 	b:SetSize(TILE_W, TILE_H);
 
 	-- rounded border (its curved corners match the rounded ButtonHilight-Square glow); tinted per state
@@ -216,7 +264,7 @@ function MulticlassUI:Render()
 		local col = (idx - 1) % COLS;
 		local row = math.floor((idx - 1) / COLS);
 		b:ClearAllPoints();
-		b:SetPoint("TOPLEFT", MulticlassFrame, "TOPLEFT", START_X + col * DX, START_Y - row * DY);
+		b:SetPoint("TOPLEFT", MulticlassClassesTab, "TOPLEFT", START_X + col * DX, START_Y - row * DY);
 		b.icon:SetTexCoord(unpack(CLASS_ICON_TC[id]));
 
 		local c = ClassColor(id);

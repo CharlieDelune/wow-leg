@@ -3,7 +3,7 @@
 	<Script file="MulticlassFrame.lua"/>
 	<Frame name="MulticlassFrame" toplevel="true" enableMouse="true" hidden="true" parent="UIParent">
 		<Size>
-			<AbsDimension x="416" y="280"/>
+			<AbsDimension x="448" y="470"/>
 		</Size>
 		<Anchors>
 			<Anchor point="TOPLEFT">
@@ -24,20 +24,35 @@
 			</EdgeSize>
 		</Backdrop>
 		<Layers>
-			<Layer level="ARTWORK">
-				<Texture name="MulticlassFramePortrait">
+			<Layer level="BACKGROUND">
+				<Texture name="MulticlassFramePortraitDisc" file="Interface\CharacterFrame\TempPortraitAlphaMask">
 					<Size>
-						<AbsDimension x="50" y="50"/>
+						<AbsDimension x="58" y="58"/>
 					</Size>
 					<Anchors>
 						<Anchor point="TOPLEFT">
 							<Offset>
-								<AbsDimension x="14" y="-12"/>
+								<AbsDimension x="19" y="-17"/>
+							</Offset>
+						</Anchor>
+					</Anchors>
+					<Color r="0.12" g="0.10" b="0.08"/>
+				</Texture>
+			</Layer>
+			<Layer level="ARTWORK">
+				<Texture name="MulticlassFramePortrait">
+					<Size>
+						<AbsDimension x="40" y="40"/>
+					</Size>
+					<Anchors>
+						<Anchor point="TOPLEFT">
+							<Offset>
+								<AbsDimension x="28" y="-26"/>
 							</Offset>
 						</Anchor>
 					</Anchors>
 				</Texture>
-				<FontString name="MulticlassFrameTitle" inherits="GameFontNormal" text="Classes">
+				<FontString name="MulticlassFrameTitle" inherits="GameFontNormal" text="Multiclass">
 					<Anchors>
 						<Anchor point="TOP">
 							<Offset>
@@ -55,15 +70,20 @@
 						</Anchor>
 					</Anchors>
 				</FontString>
-				<FontString name="MulticlassFrameHint" inherits="GameFontDisableSmall" justifyH="CENTER">
+			</Layer>
+			<Layer level="OVERLAY">
+				<Texture name="MulticlassFramePortraitRing" file="Interface\Multiclass\mc_portrait_ring">
+					<Size>
+						<AbsDimension x="62" y="62"/>
+					</Size>
 					<Anchors>
-						<Anchor point="BOTTOM">
+						<Anchor point="TOPLEFT">
 							<Offset>
-								<AbsDimension x="0" y="12"/>
+								<AbsDimension x="17" y="-15"/>
 							</Offset>
 						</Anchor>
 					</Anchors>
-				</FontString>
+				</Texture>
 			</Layer>
 		</Layers>
 		<Frames>
@@ -72,6 +92,167 @@
 					<Anchor point="TOPRIGHT">
 						<Offset>
 							<AbsDimension x="-6" y="-6"/>
+						</Offset>
+					</Anchor>
+				</Anchors>
+			</Button>
+
+			<Frame name="MulticlassClassesTab" parent="MulticlassFrame" hidden="true">
+				<Anchors>
+					<Anchor point="TOPLEFT">
+						<Offset>
+							<AbsDimension x="0" y="-84"/>
+						</Offset>
+					</Anchor>
+					<Anchor point="BOTTOMRIGHT">
+						<Offset>
+							<AbsDimension x="0" y="14"/>
+						</Offset>
+					</Anchor>
+				</Anchors>
+				<Layers>
+					<Layer level="ARTWORK">
+						<FontString name="MulticlassFrameHint" inherits="GameFontDisableSmall" justifyH="CENTER">
+							<Anchors>
+								<Anchor point="TOP">
+									<Offset>
+										<AbsDimension x="0" y="-196"/>
+									</Offset>
+								</Anchor>
+							</Anchors>
+						</FontString>
+					</Layer>
+				</Layers>
+			</Frame>
+
+			<Frame name="MulticlassTalentsTab" parent="MulticlassFrame" hidden="true">
+				<Anchors>
+					<Anchor point="TOPLEFT" relativeTo="MulticlassClassesTab" relativePoint="TOPLEFT"/>
+					<Anchor point="BOTTOMRIGHT" relativeTo="MulticlassClassesTab" relativePoint="BOTTOMRIGHT"/>
+				</Anchors>
+				<Layers>
+					<Layer level="ARTWORK">
+						<FontString name="MulticlassTalentsStubTitle" inherits="GameFontNormalLarge" text="Talents">
+							<Anchors>
+								<Anchor point="CENTER">
+									<Offset>
+										<AbsDimension x="0" y="20"/>
+									</Offset>
+								</Anchor>
+							</Anchors>
+						</FontString>
+						<FontString name="MulticlassTalentsStubText" inherits="GameFontDisableSmall" justifyH="CENTER" text="Per-class talent trees for every active class. Coming soon.">
+							<Size>
+								<AbsDimension x="300" y="0"/>
+							</Size>
+							<Anchors>
+								<Anchor point="TOP" relativeTo="MulticlassTalentsStubTitle" relativePoint="BOTTOM">
+									<Offset>
+										<AbsDimension x="0" y="-8"/>
+									</Offset>
+								</Anchor>
+							</Anchors>
+						</FontString>
+					</Layer>
+				</Layers>
+			</Frame>
+
+			<Frame name="MulticlassGlyphsTab" parent="MulticlassFrame" hidden="true">
+				<Anchors>
+					<Anchor point="TOPLEFT" relativeTo="MulticlassClassesTab" relativePoint="TOPLEFT"/>
+					<Anchor point="BOTTOMRIGHT" relativeTo="MulticlassClassesTab" relativePoint="BOTTOMRIGHT"/>
+				</Anchors>
+				<Layers>
+					<Layer level="ARTWORK">
+						<FontString name="MulticlassGlyphsStubTitle" inherits="GameFontNormalLarge" text="Glyphs">
+							<Anchors>
+								<Anchor point="CENTER">
+									<Offset>
+										<AbsDimension x="0" y="20"/>
+									</Offset>
+								</Anchor>
+							</Anchors>
+						</FontString>
+						<FontString name="MulticlassGlyphsStubText" inherits="GameFontDisableSmall" justifyH="CENTER" text="Per-class glyph sockets for every active class. Coming soon.">
+							<Size>
+								<AbsDimension x="300" y="0"/>
+							</Size>
+							<Anchors>
+								<Anchor point="TOP" relativeTo="MulticlassGlyphsStubTitle" relativePoint="BOTTOM">
+									<Offset>
+										<AbsDimension x="0" y="-8"/>
+									</Offset>
+								</Anchor>
+							</Anchors>
+						</FontString>
+					</Layer>
+				</Layers>
+			</Frame>
+
+			<Frame name="MulticlassLoadoutsTab" parent="MulticlassFrame" hidden="true">
+				<Anchors>
+					<Anchor point="TOPLEFT" relativeTo="MulticlassClassesTab" relativePoint="TOPLEFT"/>
+					<Anchor point="BOTTOMRIGHT" relativeTo="MulticlassClassesTab" relativePoint="BOTTOMRIGHT"/>
+				</Anchors>
+				<Layers>
+					<Layer level="ARTWORK">
+						<FontString name="MulticlassLoadoutsStubTitle" inherits="GameFontNormalLarge" text="Loadouts">
+							<Anchors>
+								<Anchor point="CENTER">
+									<Offset>
+										<AbsDimension x="0" y="20"/>
+									</Offset>
+								</Anchor>
+							</Anchors>
+						</FontString>
+						<FontString name="MulticlassLoadoutsStubText" inherits="GameFontDisableSmall" justifyH="CENTER" text="Save and apply whole builds: slots, talents, and glyphs together. Coming soon.">
+							<Size>
+								<AbsDimension x="300" y="0"/>
+							</Size>
+							<Anchors>
+								<Anchor point="TOP" relativeTo="MulticlassLoadoutsStubTitle" relativePoint="BOTTOM">
+									<Offset>
+										<AbsDimension x="0" y="-8"/>
+									</Offset>
+								</Anchor>
+							</Anchors>
+						</FontString>
+					</Layer>
+				</Layers>
+			</Frame>
+
+			<Button name="MulticlassFrameTab1" inherits="CharacterFrameTabButtonTemplate" id="1" text="Classes">
+				<Anchors>
+					<Anchor point="TOPLEFT" relativeTo="MulticlassFrame" relativePoint="BOTTOMLEFT">
+						<Offset>
+							<AbsDimension x="11" y="7"/>
+						</Offset>
+					</Anchor>
+				</Anchors>
+			</Button>
+			<Button name="MulticlassFrameTab2" inherits="CharacterFrameTabButtonTemplate" id="2" text="Talents">
+				<Anchors>
+					<Anchor point="LEFT" relativeTo="MulticlassFrameTab1" relativePoint="RIGHT">
+						<Offset>
+							<AbsDimension x="-16" y="0"/>
+						</Offset>
+					</Anchor>
+				</Anchors>
+			</Button>
+			<Button name="MulticlassFrameTab3" inherits="CharacterFrameTabButtonTemplate" id="3" text="Glyphs">
+				<Anchors>
+					<Anchor point="LEFT" relativeTo="MulticlassFrameTab2" relativePoint="RIGHT">
+						<Offset>
+							<AbsDimension x="-16" y="0"/>
+						</Offset>
+					</Anchor>
+				</Anchors>
+			</Button>
+			<Button name="MulticlassFrameTab4" inherits="CharacterFrameTabButtonTemplate" id="4" text="Loadouts">
+				<Anchors>
+					<Anchor point="LEFT" relativeTo="MulticlassFrameTab3" relativePoint="RIGHT">
+						<Offset>
+							<AbsDimension x="-16" y="0"/>
 						</Offset>
 					</Anchor>
 				</Anchors>
