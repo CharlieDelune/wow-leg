@@ -17,6 +17,7 @@
 
 #include "MulticlassLogic.h"
 #include "gtest/gtest.h"
+#include <string>
 #include <unordered_map>
 
 using namespace Multiclass;
@@ -344,4 +345,81 @@ TEST(MulticlassLogicTest, ClassIdFromMask_decodesSingleClassBit)
     EXPECT_EQ(ClassIdFromMask(1u << (8 - 1)), 8u);             // mage
     EXPECT_EQ(ClassIdFromMask(1u << (11 - 1)), 11u);           // druid
     EXPECT_EQ(ClassIdFromMask((1u << (1 - 1)) | (1u << (8 - 1))), 1u);  // multi-bit -> lowest set
+}
+
+TEST(MulticlassLogicTest, DeclassifyText_upperTokenCapitalizes)
+{
+    std::string t = "Well met, $C.";
+    DeclassifyText(t, "adventurer");
+    EXPECT_EQ(t, "Well met, Adventurer.");
+}
+
+TEST(MulticlassLogicTest, DeclassifyText_lowerTokenVerbatim)
+{
+    std::string t = "a brave $c indeed";
+    DeclassifyText(t, "adventurer");
+    EXPECT_EQ(t, "a brave adventurer indeed");
+}
+
+TEST(MulticlassLogicTest, DeclassifyText_multipleAndAdjacentTokens)
+{
+    std::string t = "$C, $c, $C$c";
+    DeclassifyText(t, "hero");
+    EXPECT_EQ(t, "Hero, hero, Herohero");
+}
+
+TEST(MulticlassLogicTest, DeclassifyText_multiWordCapitalizesFirstOnly)
+{
+    std::string t = "$C";
+    DeclassifyText(t, "wandering hero");
+    EXPECT_EQ(t, "Wandering hero");
+}
+
+TEST(MulticlassLogicTest, DeclassifyText_leavesOtherTokensAndPlainText)
+{
+    std::string t = "$N the $R does $B things 100% $$";
+    DeclassifyText(t, "adventurer");
+    EXPECT_EQ(t, "$N the $R does $B things 100% $$");
+}
+
+TEST(MulticlassLogicTest, DeclassifyText_emptyWordIsNoOp)
+{
+    std::string t = "$C and $c";
+    DeclassifyText(t, "");
+    EXPECT_EQ(t, "$C and $c");
+}
+
+TEST(MulticlassLogicTest, DeclassifyText_trailingDollarSafe)
+{
+    std::string t = "ends with $";
+    DeclassifyText(t, "adventurer");
+    EXPECT_EQ(t, "ends with $");
+}
+
+TEST(MulticlassLogicTest, DeclassifyText_escapedDollarBeforeClassLetterPreserved)
+{
+    std::string t = "cost $$C here";
+    DeclassifyText(t, "adventurer");
+    EXPECT_EQ(t, "cost $$C here");
+}
+
+TEST(MulticlassLogicTest, ReplaceClassToken_upperAndLowerUseDistinctReplacements)
+{
+    std::string t = "$C fights, the $c flees";
+    ReplaceClassToken(t, "{mcU}", "{mcL}");
+    EXPECT_EQ(t, "{mcU} fights, the {mcL} flees");
+}
+
+TEST(MulticlassLogicTest, ReplaceClassToken_leavesOtherTokensEscapesAndPlainText)
+{
+    std::string t = "$N the $R does $$C things 100% $$";
+    ReplaceClassToken(t, "{mcU}", "{mcL}");
+    EXPECT_EQ(t, "$N the $R does $$C things 100% $$");
+}
+
+TEST(MulticlassLogicTest, ReplaceClassToken_noDollarIsNoOp)
+{
+    std::string t = "Jerry has gone rogue";
+    ReplaceClassToken(t, "{mcU}", "{mcL}");
+    EXPECT_EQ(t, "Jerry has gone rogue");
 }

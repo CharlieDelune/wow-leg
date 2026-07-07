@@ -2360,6 +2360,16 @@ Multiclass.MaxActiveClasses = 3
 Multiclass.CombinedStats = 0
 
 #
+#    Multiclass.DiegeticClassName
+#        Description: The class-agnostic word substituted for the $C/$c class token in narrative
+#                     text (quest/gossip/book/trainer/creature chat) shown to a character running
+#                     two or more active classes. "$C" is capitalized, "$c" is used verbatim.
+#                     Empty string disables the substitution (native $C behavior).
+#        Default:     "adventurer"
+
+Multiclass.DiegeticClassName = "adventurer"
+
+#
 ###################################################################################################
 
 ###################################################################################################

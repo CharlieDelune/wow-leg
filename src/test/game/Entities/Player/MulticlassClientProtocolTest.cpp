@@ -112,6 +112,13 @@ TEST(MulticlassClientProtocolTest, SerializePeer)
     EXPECT_EQ(SerializePeer("Bob", {}), "peer Bob");   // unknown/offline -> empty id list
 }
 
+TEST(MulticlassClientProtocolTest, SerializeDiegeticWord)
+{
+    EXPECT_EQ(SerializeDiegeticWord("adventurer"), "diegetic adventurer");
+    EXPECT_EQ(SerializeDiegeticWord("wandering hero"), "diegetic wandering hero");  // may contain spaces
+    EXPECT_EQ(SerializeDiegeticWord(""), "diegetic ");                              // empty = feature off
+}
+
 TEST(MulticlassClientProtocolTest, WhoClassMask_matchesWhoBitConvention)
 {
     // WHO filter tests `classmask & (1 << classId)`; the active mask must use the same convention.

@@ -20,7 +20,10 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 #include "Define.h"
@@ -334,6 +337,61 @@ namespace Multiclass
         for (float value : perClassValues)
             best = std::max(best, value);
         return best;
+    }
+
+    // Replaces the WoW class token (normally client-expanded) in narrative text: "$C" -> forUpper, "$c" ->
+    // forLower. Only the class token is touched; $R/$N/$G and a bare/escaped "$$" are left intact. No-op if
+    // `text` has no '$'. Callers supply either the class-agnostic word (see DeclassifyText) or a client-side
+    // marker (see MarkClassToken) as the replacements.
+    inline void ReplaceClassToken(std::string& text, std::string_view forUpper, std::string_view forLower)
+    {
+        if (text.find('$') == std::string::npos)
+            return;
+
+        std::string out;
+        out.reserve(text.size());
+        for (std::size_t i = 0; i < text.size(); ++i)
+        {
+            if (text[i] == '$' && i + 1 < text.size())
+            {
+                // "$$" is an escaped literal '$': copy both bytes so the second '$' cannot start a token
+                // (e.g. "$$C" stays "$$C" rather than expanding the trailing "$C").
+                if (text[i + 1] == '$')
+                {
+                    out.push_back('$');
+                    out.push_back('$');
+                    ++i;
+                    continue;
+                }
+                if (text[i + 1] == 'C')
+                {
+                    out.append(forUpper.data(), forUpper.size());
+                    ++i;
+                    continue;
+                }
+                if (text[i + 1] == 'c')
+                {
+                    out.append(forLower.data(), forLower.size());
+                    ++i;
+                    continue;
+                }
+            }
+            out.push_back(text[i]);
+        }
+        text.swap(out);
+    }
+
+    // Replaces the class token with a class-agnostic word, so a multiclass character's world-facing text never
+    // names a single class. "$C" -> word with its first ASCII byte upper-cased (WoW sentence-position
+    // convention); "$c" -> word verbatim.
+    inline void DeclassifyText(std::string& text, std::string_view word)
+    {
+        if (word.empty())
+            return;
+
+        std::string upper(word);
+        upper[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(upper[0])));
+        ReplaceClassToken(text, upper, word);
     }
 }
 

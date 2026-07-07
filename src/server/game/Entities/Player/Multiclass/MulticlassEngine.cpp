@@ -17,6 +17,7 @@
 
 #include "MulticlassEngine.h"
 #include "MulticlassClientProtocol.h"
+#include "MulticlassLogic.h"
 #include "MulticlassSpells.h"
 #include "CellImpl.h"
 #include "Chat.h"
@@ -687,6 +688,14 @@ namespace Multiclass
         WorldPacket data;
         ChatHandler::BuildChatPacket(data, CHAT_MSG_WHISPER, LANG_ADDON, player, player, payload);
         player->GetSession()->SendPacket(&data);
+
+        // Realm's diegetic marker word, so the client can expand the {mcU}/{mcL} markers in cached narrative
+        // text (npc_text / quest-query / page_text). Its own message because the word may contain spaces.
+        std::string wordPayload(kClientMsgTag);
+        wordPayload += SerializeDiegeticWord(sWorld->getStringConfig(CONFIG_MULTICLASS_DIEGETIC_CLASS_NAME));
+        WorldPacket wordData;
+        ChatHandler::BuildChatPacket(wordData, CHAT_MSG_WHISPER, LANG_ADDON, player, player, wordPayload);
+        player->GetSession()->SendPacket(&wordData);
     }
 
     void SendPeer(Player* recipient, std::string_view name, std::vector<uint8> const& active)
@@ -697,5 +706,31 @@ namespace Multiclass
         WorldPacket data;
         ChatHandler::BuildChatPacket(data, CHAT_MSG_WHISPER, LANG_ADDON, recipient, recipient, payload);
         recipient->GetSession()->SendPacket(&data);
+    }
+
+    bool ShouldDeclassify(Player const* player)
+    {
+        if (!player || !player->IsMulticlassManaged())
+            return false;
+
+        if (player->GetMulticlassProfile().GetActiveClasses().size() < 2)
+            return false;
+
+        return !sWorld->getStringConfig(CONFIG_MULTICLASS_DIEGETIC_CLASS_NAME).empty();
+    }
+
+    void DeclassifyFor(Player const* player, std::string& text)
+    {
+        if (ShouldDeclassify(player))
+            DeclassifyText(text, sWorld->getStringConfig(CONFIG_MULTICLASS_DIEGETIC_CLASS_NAME));
+    }
+
+    void MarkClassToken(std::string& text)
+    {
+        if (!sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE)
+            || sWorld->getStringConfig(CONFIG_MULTICLASS_DIEGETIC_CLASS_NAME).empty())
+            return;
+
+        ReplaceClassToken(text, "{mcU}", "{mcL}");
     }
 }

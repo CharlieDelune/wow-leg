@@ -712,4 +712,5 @@ void WorldConfig::BuildConfigCache()
     SetConfigValue<bool>(CONFIG_MULTICLASS_ENABLE, "Multiclass.Enable", false);
     SetConfigValue<uint32>(CONFIG_MULTICLASS_MAX_ACTIVE_CLASSES, "Multiclass.MaxActiveClasses", 3);
     SetConfigValue<uint32>(CONFIG_MULTICLASS_COMBINED_STATS, "Multiclass.CombinedStats", MULTICLASS_STATS_HIGHEST);
+    SetConfigValue<std::string>(CONFIG_MULTICLASS_DIEGETIC_CLASS_NAME, "Multiclass.DiegeticClassName", "adventurer");
 }

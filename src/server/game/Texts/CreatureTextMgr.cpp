@@ -23,6 +23,7 @@
 #include "DatabaseEnv.h"
 #include "GridNotifiers.h"
 #include "MiscPackets.h"
+#include "MulticlassEngine.h"
 #include "ObjectMgr.h"
 
 class CreatureTextBuilder
@@ -33,7 +34,10 @@ public:
 
     std::size_t operator()(WorldPacket* data, LocaleConstant locale) const
     {
-        std::string const& text = sCreatureTextMgr->GetLocalizedChatString(_source->GetEntry(), _gender, _textGroup, _textId, locale);
+        std::string text = sCreatureTextMgr->GetLocalizedChatString(_source->GetEntry(), _gender, _textGroup, _textId, locale);
+
+        if (_target)
+            Multiclass::DeclassifyFor(_target->ToPlayer(), text);
 
         return ChatHandler::BuildChatPacket(*data, _msgType, Language(_language), _source, _target, text, 0, "", locale);
     }
@@ -56,7 +60,10 @@ public:
 
     std::size_t operator()(WorldPacket* data, LocaleConstant locale) const
     {
-        std::string const& text = sCreatureTextMgr->GetLocalizedChatString(_source->GetEntry(), _gender, _textGroup, _textId, locale);
+        std::string text = sCreatureTextMgr->GetLocalizedChatString(_source->GetEntry(), _gender, _textGroup, _textId, locale);
+
+        if (_target)
+            Multiclass::DeclassifyFor(_target->ToPlayer(), text);
 
         return ChatHandler::BuildChatPacket(*data, _msgType, Language(_language), _talker, _target, text, 0, "", locale);
     }

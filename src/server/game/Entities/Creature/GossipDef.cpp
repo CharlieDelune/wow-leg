@@ -17,6 +17,7 @@
 
 #include "GossipDef.h"
 #include "Formulas.h"
+#include "MulticlassEngine.h"
 #include "Object.h"
 #include "ObjectMgr.h"
 #include "Opcodes.h"
@@ -330,6 +331,7 @@ void PlayerMenu::SendQuestGiverQuestList(QEmote const& eEmote, std::string const
                 strGreeting = questGreeting->Greeting[DEFAULT_LOCALE];
         }
 
+        Multiclass::DeclassifyFor(_session->GetPlayer(), strGreeting);
         data << strGreeting;
         data << uint32(questGreeting->EmoteDelay);
         data << uint32(questGreeting->EmoteType);
@@ -400,6 +402,9 @@ void PlayerMenu::SendQuestGiverQuestDetails(Quest const* quest, ObjectGuid npcGU
         ObjectMgr::GetLocaleString(localeData->Objectives, locale, questObjectives);
         ObjectMgr::GetLocaleString(localeData->AreaDescription, locale, questAreaDescription);
     }
+
+    Multiclass::DeclassifyFor(_session->GetPlayer(), questDetails);
+    Multiclass::DeclassifyFor(_session->GetPlayer(), questObjectives);
 
     WorldPacket data(SMSG_QUESTGIVER_QUEST_DETAILS, 500);   // guess size
     data << npcGUID;
@@ -529,6 +534,15 @@ void PlayerMenu::SendQuestQueryResponse(Quest const* quest) const
             ObjectMgr::GetLocaleString(localeData->ObjectiveText[i], locale, questObjectiveText[i]);
     }
 
+    // SMSG_QUEST_QUERY_RESPONSE is WDB-cached client-side (questcache.wdb), so this uses the global marker
+    // (identical for every recipient) rather than per-recipient text; the client addon expands it per-viewer.
+    Multiclass::MarkClassToken(questDetails);
+    Multiclass::MarkClassToken(questObjectives);
+    Multiclass::MarkClassToken(questAreaDescription);
+    Multiclass::MarkClassToken(questCompletedText);
+    for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+        Multiclass::MarkClassToken(questObjectiveText[i]);
+
     WorldPacket data(SMSG_QUEST_QUERY_RESPONSE, 100);       // guess size
 
     data << uint32(quest->GetQuestId());                    // quest id
@@ -655,6 +669,8 @@ void PlayerMenu::SendQuestGiverOfferReward(Quest const* quest, ObjectGuid npcGUI
 
     if (QuestOfferRewardLocale const* questOfferRewardLocale = sObjectMgr->GetQuestOfferRewardLocale(quest->GetQuestId()))
         ObjectMgr::GetLocaleString(questOfferRewardLocale->RewardText, locale, RewardText);
+
+    Multiclass::DeclassifyFor(_session->GetPlayer(), RewardText);
 
     WorldPacket data(SMSG_QUESTGIVER_OFFER_REWARD, 400);    // guess size
     data << npcGUID;
@@ -786,6 +802,8 @@ void PlayerMenu::SendQuestGiverRequestItems(Quest const* quest, ObjectGuid npcGU
             canComplete = true;
         }
     }
+
+    Multiclass::DeclassifyFor(_player, requestItemsText);
 
     WorldPacket data(SMSG_QUESTGIVER_REQUEST_ITEMS, 300);   // guess size
     data << npcGUID;

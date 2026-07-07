@@ -147,5 +147,6 @@ MulticlassIdentity.lua
 MulticlassFrame.xml
 MulticlassIdentityHooks.lua
 MulticlassProjectionDisplay.lua
+MulticlassDiegetic.lua
 ## add new modules above here
 LocalizationPost.xml

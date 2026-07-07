@@ -423,8 +423,7 @@ public:
         }
 
         return true;
-    }
-};
+    }};
 
 void AddSC_multiclass_commandscript()
 {

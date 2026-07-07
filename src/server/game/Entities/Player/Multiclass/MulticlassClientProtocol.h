@@ -159,6 +159,16 @@ namespace Multiclass
         return out;
     }
 
+    // "diegetic <word>" — the realm's configured class-agnostic word (may contain spaces, so it is the rest
+    // of the line). The client expands the {mcU}/{mcL} markers in cached narrative text with it for multiclass
+    // viewers. An empty word means the diegetic feature is off (no markers are ever emitted).
+    inline std::string SerializeDiegeticWord(std::string_view word)
+    {
+        std::string out = "diegetic ";
+        out.append(word);
+        return out;
+    }
+
     // "peer <name> <activeClassId> ..." — active ids in slot order; empty list means unknown/offline.
     inline std::string SerializePeer(std::string_view name, std::vector<uint8> const& active)
     {

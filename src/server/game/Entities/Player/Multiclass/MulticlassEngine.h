@@ -54,6 +54,19 @@ namespace Multiclass
     void BackfillActiveLedgers(Player* player);
     void SendClientState(Player* player);
     void SendPeer(Player* recipient, std::string_view name, std::vector<uint8> const& active);
+
+    // True when world-facing narrative text should be declassified for this player: multiclass enabled +
+    // managed, 2+ active classes (a single active class keeps its real class name = vanilla), non-empty word.
+    bool ShouldDeclassify(Player const* player);
+
+    // Site-facing wrapper for LIVE (un-cached) surfaces: replace $C/$c in `text` with the configured diegetic
+    // word iff ShouldDeclassify(player) — per-recipient, so a single-active-class player keeps their class.
+    void DeclassifyFor(Player const* player, std::string& text);
+
+    // Site-facing path for WDB-CACHED surfaces (npc_text / quest-query / page_text): replace $C/$c with a
+    // client-side marker ({mcU}/{mcL}) globally (realm-gated on enable + non-empty word, no recipient). The
+    // cached text is then identical for every character, and the client addon expands the marker per-viewer.
+    void MarkClassToken(std::string& text);
 }
 
 #endif

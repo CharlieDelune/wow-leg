@@ -19,6 +19,7 @@
 #include "GameTime.h"
 #include "Log.h"
 #include "MapMgr.h"
+#include "MulticlassEngine.h"
 #include "NPCHandler.h"
 #include "ObjectMgr.h"
 #include "Opcodes.h"
@@ -330,6 +331,9 @@ void WorldSession::HandleNpcTextQueryOpcode(WorldPacket& recvData)
                 }
             }
 
+            Multiclass::MarkClassToken(text0[i]);
+            Multiclass::MarkClassToken(text1[i]);
+
             data << gossip->Options[i].Probability;
 
             if (text0[i].empty())
@@ -386,6 +390,7 @@ void WorldSession::HandlePageTextQueryOpcode(WorldPacket& recvData)
                 if (PageTextLocale const* player = sObjectMgr->GetPageTextLocale(pageID))
                     ObjectMgr::GetLocaleString(player->Text, loc_idx, Text);
 
+            Multiclass::MarkClassToken(Text);
             data << Text;
             data << pageText->NextPage;
             pageID = pageText->NextPage;

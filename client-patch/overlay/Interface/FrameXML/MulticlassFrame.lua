@@ -63,6 +63,8 @@ function MulticlassUI:OnFrameEvent(event, arg1, arg2)
 			if ( type(UpdateMicroButtons) == "function" ) then
 				UpdateMicroButtons();
 			end
+		elseif ( verb == "diegetic" ) then
+			self.diegeticWord = string.match(message, "^diegetic%s+(.*)") or "";
 		elseif ( verb == "err" ) then
 			local text = string.match(message, "^err%s+(.*)");
 			UIErrorsFrame:AddMessage(text or "Class change failed.", 1.0, 0.1, 0.1, 1.0);

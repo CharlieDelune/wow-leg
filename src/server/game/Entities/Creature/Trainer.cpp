@@ -17,6 +17,7 @@
 
 #include "Trainer.h"
 #include "Creature.h"
+#include "MulticlassEngine.h"
 #include "NPCPackets.h"
 #include "Player.h"
 #include "SpellInfo.h"
@@ -42,6 +43,7 @@ namespace Trainer
         trainerList.TrainerGUID = npc->GetGUID();
         trainerList.TrainerType = AsUnderlyingType(_type);
         trainerList.Greeting = GetGreeting(locale);
+        Multiclass::DeclassifyFor(player, trainerList.Greeting);
         trainerList.Spells.reserve(_spells.size());
         for (Spell const& trainerSpell : _spells)
         {
