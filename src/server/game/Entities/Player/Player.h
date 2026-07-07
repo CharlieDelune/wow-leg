@@ -2644,6 +2644,7 @@ public:
     void ResyncRunes(uint8 count);
     void AddRunePower(uint8 index);
     void InitRunes();
+    void EnsureRunesInitialized();
 
     void SendRespondInspectAchievements(Player* player) const;
     [[nodiscard]] bool HasAchieved(uint32 achievementId) const;

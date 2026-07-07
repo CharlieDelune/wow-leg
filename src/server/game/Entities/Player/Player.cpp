@@ -14257,6 +14257,16 @@ void Player::InitRunes()
         SetFloatValue(PLAYER_RUNE_REGEN_1 + i, 0.1f);
 }
 
+void Player::EnsureRunesInitialized()
+{
+    // The rune structure is allocated lazily by InitRunes, and only when Death Knight is active -- at login
+    // that means a character who was not a DK never gets one. When DK is activated as a multiclass off-class
+    // at runtime, IsClass(DEATH_KNIGHT) flips true and RegenerateAll starts dereferencing m_runes every tick,
+    // so allocate it the first time DK enters the active set. Benching leaves the structure in place.
+    if (!m_runes && IsClass(CLASS_DEATH_KNIGHT, CLASS_CONTEXT_ABILITY))
+        InitRunes();
+}
+
 bool Player::IsBaseRuneSlotsOnCooldown(RuneType runeType) const
 {
     for (uint8 i = 0; i < MAX_RUNES; ++i)

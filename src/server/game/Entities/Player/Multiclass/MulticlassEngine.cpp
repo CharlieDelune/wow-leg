@@ -505,6 +505,9 @@ namespace Multiclass
         // combined stat sheet in place (preserving vitals). Shared by SwapSlotClass and UnsetSlot.
         void FinalizeActiveSetChange(Player* player)
         {
+            // A newly-active Death Knight needs its rune structure before anything (this call or the next
+            // regen tick) walks it; the login path only allocates runes for a DK that was active at load.
+            player->EnsureRunesInitialized();
             // Reconcile skills AND skill-teaching spells to the new active set BEFORE checking gear, so a live
             // set change == a relog (mirrors the login-time _LoadSpells + _LoadSkills prunes). A benched
             // class's trained proficiency is not a starting line the teardown above removes, so without this

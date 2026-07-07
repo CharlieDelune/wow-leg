@@ -5138,6 +5138,22 @@ void Player::SyncMulticlassProjection()
             if (ChrClassesEntry const* cEntry = sChrClassesStore.LookupEntry(projected))
                 if (cEntry->powerType < MAX_POWERS && uint32(getPowerType()) != cEntry->powerType)
                     setPowerType(Powers(cEntry->powerType));
+
+        // Death Knight runes render only for the projected (client-visible) class; when DK becomes projected
+        // at runtime the login-time rune-power setup (InitStatsForLevel) has not run, so the client shows an
+        // empty rune widget until a full relog. Set the structural maxes and resync the CURRENT rune state.
+        // This does NOT refund spent runes: usability is gated on the per-rune cooldowns in m_runes
+        // (Spell::CheckRuneCost), which a bench/reslot never resets -- ResyncRunes reports their true
+        // remaining cooldowns, and POWER_RUNE is only the static rune-slot field a DK always carries. Current
+        // runic power is live state and is left untouched. Guarded on m_runes: at login this runs before
+        // InitRunes (which sets runes up on its own); a live activation already allocated them.
+        if (projected == CLASS_DEATH_KNIGHT && m_runes)
+        {
+            SetPower(POWER_RUNE, 8);
+            SetMaxPower(POWER_RUNE, 8);
+            SetMaxPower(POWER_RUNIC_POWER, 1000);
+            ResyncRunes(MAX_RUNES);
+        }
     }
 }
 
