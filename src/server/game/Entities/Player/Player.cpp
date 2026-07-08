@@ -14072,6 +14072,77 @@ uint32 Player::GetClassGlyph(uint8 classId, uint8 slot) const
     return m_multiclassGlyphs[classId][slot];
 }
 
+bool Player::ApplyClassGlyph(uint8 classId, uint8 slot, uint32 glyphId)
+{
+    if (classId == 0 || classId >= MAX_CLASSES || slot >= MAX_GLYPH_SLOT_INDEX)
+        return false;
+    if (!GetMulticlassProfile().HasActiveClass(classId))
+        return false;
+
+    // Slot must be unlocked for THIS class's own level.
+    uint8 const unlock = Multiclass::GlyphSlotUnlockLevel(slot);
+    if (unlock && GetMulticlassProfile().GetClassLevel(classId) < unlock)
+        return false;
+
+    GlyphPropertiesEntry const* glyphEntry = sGlyphPropertiesStore.LookupEntry(glyphId);
+    if (!glyphEntry)
+        return false;
+
+    // Glyph type must match the slot type (slot type is fixed by slot index, class-independent).
+    if (GlyphSlotEntry const* slotEntry = sGlyphSlotStore.LookupEntry(GetGlyphSlot(slot)))
+        if (glyphEntry->TypeFlags != slotEntry->TypeFlags)
+            return false;
+
+    // Strip the class's current glyph aura in this slot (the class is active, so its auras are live) plus any
+    // auras it triggered, then apply the new one and write the model. SetClassGlyph mirrors to the view iff
+    // classId is the rendered class.
+    if (uint32 const oldGlyph = GetClassGlyph(classId, slot))
+        if (GlyphPropertiesEntry const* oldEntry = sGlyphPropertiesStore.LookupEntry(oldGlyph))
+        {
+            RemoveAurasDueToSpell(oldEntry->SpellId);
+
+            Unit::AuraMap& ownedAuras = GetOwnedAuras();
+            for (Unit::AuraMap::iterator iter = ownedAuras.begin(); iter != ownedAuras.end();)
+            {
+                Aura* aura = iter->second;
+                if (SpellInfo const* triggeredByAuraSpellInfo = aura->GetTriggeredByAuraSpellInfo())
+                {
+                    if (triggeredByAuraSpellInfo->Id == oldEntry->SpellId)
+                    {
+                        RemoveOwnedAura(iter);
+                        continue;
+                    }
+                }
+                ++iter;
+            }
+
+            SendLearnPacket(oldEntry->SpellId, false);
+        }
+
+    SendLearnPacket(glyphEntry->SpellId, true);
+    CastSpell(this, glyphEntry->SpellId, TriggerCastFlags(TRIGGERED_FULL_MASK & ~(TRIGGERED_IGNORE_SHAPESHIFT | TRIGGERED_IGNORE_CASTER_AURASTATE)));
+    SetClassGlyph(classId, slot, glyphId, !GetSession()->PlayerLoading());
+    return true;
+}
+
+bool Player::RemoveClassGlyph(uint8 classId, uint8 slot)
+{
+    if (classId == 0 || classId >= MAX_CLASSES || slot >= MAX_GLYPH_SLOT_INDEX)
+        return false;
+
+    uint32 const glyph = GetClassGlyph(classId, slot);
+    if (!glyph)
+        return false;
+
+    if (GlyphPropertiesEntry const* glyphEntry = sGlyphPropertiesStore.LookupEntry(glyph))
+    {
+        RemoveAurasDueToSpell(glyphEntry->SpellId);
+        SendLearnPacket(glyphEntry->SpellId, false);
+    }
+    SetClassGlyph(classId, slot, 0, true);   // free; persist the cleared slot
+    return true;
+}
+
 void Player::SyncProjectedGlyphView()
 {
     // Repaint the client's single glyph panel to the projected class's model set: copy m_multiclassGlyphs

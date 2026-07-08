@@ -199,6 +199,7 @@ public:
         Multiclass::GrantSlotCapacity(player, MulticlassProfile::SlotCapacityForLevel(mc.GetMaxOwnedLevel()));
         player->SaveMulticlassProfile();
         Multiclass::ReconcileDisplayLevel(player);
+        Multiclass::SendClientState(player);   // refresh an open panel live (glyph unlocks, talent pool, per-class level)
         handler->PSendSysMessage("Slot {} (class {}) level set to {}.", uint32(slot), uint32(classId), uint32(level));
         return true;
     }

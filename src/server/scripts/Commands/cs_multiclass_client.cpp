@@ -20,6 +20,7 @@
 #include "MulticlassEngine.h"
 #include "MulticlassProfile.h"
 #include "ObjectAccessor.h"
+#include "ObjectMgr.h"
 #include "Player.h"
 #include "ScriptMgr.h"
 #include "World.h"
@@ -104,6 +105,49 @@ public:
                     break;
                 }
                 player->ResetClassTalents(req.talentClass);   // charges the per-class ladder; may no-op
+                Multiclass::SendClientState(player);
+                break;
+            }
+            case Multiclass::ClientVerb::SocketGlyph:
+            {
+                if (!enabled)
+                    break;
+                if (!mc.HasActiveClass(req.glyphClass))
+                {
+                    SendError(player, "That class isn't active.");
+                    break;
+                }
+                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(req.glyphItemId);
+                if (!proto || proto->Class != ITEM_CLASS_GLYPH || uint8(proto->SubClass) != req.glyphClass)
+                {
+                    SendError(player, "That glyph isn't for this class.");
+                    break;
+                }
+                if (player->GetItemCount(req.glyphItemId, false) == 0)
+                {
+                    SendError(player, "You don't have that glyph.");
+                    break;
+                }
+                uint32 const glyphId = Multiclass::GlyphIdFromItem(proto);
+                if (glyphId == 0 || !player->ApplyClassGlyph(req.glyphClass, req.glyphSlot, glyphId))
+                {
+                    SendError(player, "That glyph can't go in that slot.");
+                    break;
+                }
+                player->DestroyItemCount(req.glyphItemId, 1, true);   // consume one; economy intact
+                Multiclass::SendClientState(player);
+                break;
+            }
+            case Multiclass::ClientVerb::RemoveGlyph:
+            {
+                if (!enabled)
+                    break;
+                if (!mc.HasActiveClass(req.glyphClass))
+                {
+                    SendError(player, "That class isn't active.");
+                    break;
+                }
+                player->RemoveClassGlyph(req.glyphClass, req.glyphSlot);   // free
                 Multiclass::SendClientState(player);
                 break;
             }

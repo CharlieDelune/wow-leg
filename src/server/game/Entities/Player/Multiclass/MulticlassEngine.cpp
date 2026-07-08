@@ -24,9 +24,11 @@
 #include "DatabaseEnv.h"
 #include "DBCStores.h"
 #include "GridNotifiers.h"
+#include "ItemTemplate.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "SharedDefines.h"
+#include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StringFormat.h"
 #include "World.h"
@@ -678,6 +680,24 @@ namespace Multiclass
         EnforceActiveCapacity(player);     // if the new cap is below the filled count, bench the excess
     }
 
+    uint32 GlyphIdFromItem(ItemTemplate const* proto)
+    {
+        if (!proto)
+            return 0;
+        for (uint8 i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
+        {
+            if (proto->Spells[i].SpellId <= 0)
+                continue;
+            SpellInfo const* si = sSpellMgr->GetSpellInfo(uint32(proto->Spells[i].SpellId));
+            if (!si)
+                continue;
+            for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
+                if (si->Effects[e].Effect == SPELL_EFFECT_APPLY_GLYPH)
+                    return si->Effects[e].MiscValue;
+        }
+        return 0;
+    }
+
     void SendClientState(Player* player)
     {
         if (!player || !player->GetSession())
@@ -712,6 +732,30 @@ namespace Multiclass
                 WorldPacket tData;
                 ChatHandler::BuildChatPacket(tData, CHAT_MSG_WHISPER, LANG_ADDON, player, player, tPayload);
                 player->GetSession()->SendPacket(&tData);
+            }
+
+            // P4/SP3: one glyph snapshot per ACTIVE class — the 6 slots' socketed glyph spell ids + per-slot
+            // enabled (unlocked for that class's own level). The custom Glyphs ring renders straight from this.
+            for (uint8 const classId : mc.GetActiveClasses())
+            {
+                std::vector<std::pair<uint32, uint32>> slots;
+                slots.reserve(MAX_GLYPH_SLOT_INDEX);
+                uint8 const classLevel = mc.GetClassLevel(classId);
+                for (uint8 slot = 0; slot < MAX_GLYPH_SLOT_INDEX; ++slot)
+                {
+                    uint32 spellId = 0;
+                    if (uint32 const g = player->GetClassGlyph(classId, slot))
+                        if (GlyphPropertiesEntry const* ge = sGlyphPropertiesStore.LookupEntry(g))
+                            spellId = ge->SpellId;
+                    uint8 const unlock = GlyphSlotUnlockLevel(slot);
+                    uint32 const en = (unlock == 0 || classLevel >= unlock) ? 1u : 0u;
+                    slots.emplace_back(spellId, en);
+                }
+                std::string gPayload(kClientMsgTag);
+                gPayload += SerializeClassGlyphs(classId, slots);
+                WorldPacket gData;
+                ChatHandler::BuildChatPacket(gData, CHAT_MSG_WHISPER, LANG_ADDON, player, player, gPayload);
+                player->GetSession()->SendPacket(&gData);
             }
         }
     }

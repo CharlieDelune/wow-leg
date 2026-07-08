@@ -19,8 +19,8 @@ end
 function MulticlassUI:SelectTab(id)
 	if ( not TABS[id] ) then return end
 	self.activeTab = id;
-	MulticlassFrame:SetWidth((id == "talents") and 960 or 448);
-	MulticlassFrame:SetHeight((id == "talents") and 620 or 470);
+	MulticlassFrame:SetWidth((id == "talents") and 960 or (id == "glyphs") and 440 or 448);
+	MulticlassFrame:SetHeight((id == "talents") and 620 or (id == "glyphs") and 530 or 470);
 	if ( MulticlassFrame:IsShown() ) then UpdateUIPanelPositions(MulticlassFrame) end
 	for key, t in pairs(TABS) do
 		if ( key == id ) then t.frame:Show() else t.frame:Hide() end
@@ -42,7 +42,7 @@ function MulticlassUI:InitTabs()
 
 	MulticlassUI:RegisterTab("classes", MulticlassClassesTab, function() MulticlassUI:Render() end);
 	MulticlassUI:RegisterTab("talents", MulticlassTalentsTab, function() MulticlassUI:RenderTalents() end);
-	MulticlassUI:RegisterTab("glyphs", MulticlassGlyphsTab, nil);
+	MulticlassUI:RegisterTab("glyphs", MulticlassGlyphsTab, function() MulticlassUI:RenderGlyphs() end);
 	MulticlassUI:RegisterTab("loadouts", MulticlassLoadoutsTab, nil);
 end
 
@@ -120,6 +120,8 @@ function MulticlassUI:OnFrameEvent(event, arg1, arg2)
 			UIErrorsFrame:AddMessage(text or "Class change failed.", 1.0, 0.1, 0.1, 1.0);
 		elseif ( verb == "talents" ) then
 			self:OnTalentsMessage(message);
+		elseif ( verb == "glyphs" ) then
+			self:OnGlyphsMessage(message);
 		end
 	end
 end

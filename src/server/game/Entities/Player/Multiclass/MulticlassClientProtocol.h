@@ -31,7 +31,7 @@ namespace Multiclass
     // On-wire body prefix shared by every MCLS addon-channel message: "MCLS\tpayload".
     inline constexpr std::string_view kClientMsgTag = "MCLS\t";
 
-    enum class ClientVerb : uint8 { Invalid, Hello, SetOrder, Whois, SpendTalent, ResetTalents };
+    enum class ClientVerb : uint8 { Invalid, Hello, SetOrder, Whois, SpendTalent, ResetTalents, SocketGlyph, RemoveGlyph };
 
     struct ClientRequest
     {
@@ -41,6 +41,9 @@ namespace Multiclass
         uint8 talentClass = 0;             // SpendTalent / ResetTalents: the target active class
         uint32 talentId = 0;               // SpendTalent: DBC TalentID
         uint8 talentRank = 0;              // SpendTalent: 0-based rank index to add (== current point count)
+        uint8 glyphClass = 0;              // SocketGlyph / RemoveGlyph: the target active class (ring)
+        uint8 glyphSlot = 0;               // SocketGlyph / RemoveGlyph: glyph slot 0..5
+        uint32 glyphItemId = 0;            // SocketGlyph: item entry of the glyph being socketed
     };
 
     enum class DenyReason : uint8
@@ -136,6 +139,27 @@ namespace Multiclass
             {
                 req.verb = ClientVerb::ResetTalents;
                 req.talentClass = c;
+            }
+        }
+        else if (tok[0] == "socketglyph" && tok.size() == 4)
+        {
+            uint8 c = 0; uint8 s = 0; uint32 item = 0;
+            if (ParseU8(tok[1], c) && ParseU8(tok[2], s) && ParseU32(tok[3], item))
+            {
+                req.verb = ClientVerb::SocketGlyph;
+                req.glyphClass = c;
+                req.glyphSlot = s;
+                req.glyphItemId = item;
+            }
+        }
+        else if (tok[0] == "removeglyph" && tok.size() == 3)
+        {
+            uint8 c = 0; uint8 s = 0;
+            if (ParseU8(tok[1], c) && ParseU8(tok[2], s))
+            {
+                req.verb = ClientVerb::RemoveGlyph;
+                req.glyphClass = c;
+                req.glyphSlot = s;
             }
         }
         return req;
@@ -234,6 +258,25 @@ namespace Multiclass
             out += std::to_string(talentId);
             out += ':';
             out += std::to_string(rank);
+        }
+        return out;
+    }
+
+    // "glyphs <classId> <slot>:<glyphSpellId>:<enabled> ..." — one message per active class; slots 0..5 in
+    // order, glyphSpellId 0 = empty, enabled 1 when that slot is unlocked for the class's own level. Slot
+    // type (major/minor) is fixed by slot index and hardcoded client-side, so it is not on the wire.
+    inline std::string SerializeClassGlyphs(uint8 classId, std::vector<std::pair<uint32, uint32>> const& slots)
+    {
+        std::string out = "glyphs ";
+        out += std::to_string(classId);
+        for (std::size_t i = 0; i < slots.size(); ++i)
+        {
+            out += ' ';
+            out += std::to_string(i);
+            out += ':';
+            out += std::to_string(slots[i].first);
+            out += ':';
+            out += std::to_string(slots[i].second);
         }
         return out;
     }

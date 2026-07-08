@@ -27,6 +27,7 @@
 #include <vector>
 
 class Player;
+struct ItemTemplate;
 
 namespace Multiclass
 {
@@ -54,6 +55,10 @@ namespace Multiclass
     void BackfillActiveLedgers(Player* player);
     void SendClientState(Player* player);
     void SendPeer(Player* recipient, std::string_view name, std::vector<uint8> const& active);
+
+    // The glyph (GlyphProperties id) a glyph item teaches: scan the item's on-use spells for the one with a
+    // SPELL_EFFECT_APPLY_GLYPH effect and return that effect's MiscValue. 0 if the item teaches no glyph.
+    uint32 GlyphIdFromItem(ItemTemplate const* proto);
 
     // True when world-facing narrative text should be declassified for this player: multiclass enabled +
     // managed, 2+ active classes (a single active class keeps its real class name = vanilla), non-empty word.

@@ -1861,6 +1861,13 @@ public:
     [[nodiscard]] uint32 GetClassGlyph(uint8 classId, uint8 slot) const;
     void SyncProjectedGlyphView();
 
+    // Class-explicit glyph socket/remove (P4/SP3). Keyed entirely on classId — validates active membership,
+    // that class's own slot-unlock level, and glyph-vs-slot type; swaps the aura and writes m_multiclassGlyphs.
+    // Shared by the socketglyph wire verb and the managed branch of EffectApplyGlyph. RemoveClassGlyph is free
+    // (no reagent). Return true on a state change.
+    bool ApplyClassGlyph(uint8 classId, uint8 slot, uint32 glyphId);
+    bool RemoveClassGlyph(uint8 classId, uint8 slot);
+
     [[nodiscard]] uint32 GetFreePrimaryProfessionPoints() const { return GetUInt32Value(PLAYER_CHARACTER_POINTS2); }
     void SetFreePrimaryProfessions(uint16 profs) { SetUInt32Value(PLAYER_CHARACTER_POINTS2, profs); }
     void InitPrimaryProfessions();
