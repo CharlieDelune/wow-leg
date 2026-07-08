@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Multiclass
@@ -30,13 +31,16 @@ namespace Multiclass
     // On-wire body prefix shared by every MCLS addon-channel message: "MCLS\tpayload".
     inline constexpr std::string_view kClientMsgTag = "MCLS\t";
 
-    enum class ClientVerb : uint8 { Invalid, Hello, SetOrder, Whois };
+    enum class ClientVerb : uint8 { Invalid, Hello, SetOrder, Whois, SpendTalent, ResetTalents };
 
     struct ClientRequest
     {
         ClientVerb verb = ClientVerb::Invalid;
         std::vector<uint8> order;          // SetOrder: desired active classIds in slot order (slot 0 first)
         std::vector<std::string> names;    // Whois: player names to resolve
+        uint8 talentClass = 0;             // SpendTalent / ResetTalents: the target active class
+        uint32 talentId = 0;               // SpendTalent: DBC TalentID
+        uint8 talentRank = 0;              // SpendTalent: 0-based rank index to add (== current point count)
     };
 
     enum class DenyReason : uint8
@@ -53,6 +57,18 @@ namespace Multiclass
         if (result.ec != std::errc() || result.ptr != tok.data() + tok.size() || value > 255)
             return false;
         out = static_cast<uint8>(value);
+        return true;
+    }
+
+    inline bool ParseU32(std::string_view tok, uint32& out)
+    {
+        if (tok.empty())
+            return false;
+        uint32 value = 0;
+        auto const result = std::from_chars(tok.data(), tok.data() + tok.size(), value);
+        if (result.ec != std::errc() || result.ptr != tok.data() + tok.size())
+            return false;
+        out = value;
         return true;
     }
 
@@ -101,6 +117,26 @@ namespace Multiclass
             req.names.reserve(tok.size() - 1);
             for (std::size_t t = 1; t < tok.size(); ++t)
                 req.names.emplace_back(tok[t]);
+        }
+        else if (tok[0] == "spendtalent" && tok.size() == 4)
+        {
+            uint8 c = 0; uint32 tId = 0; uint8 r = 0;
+            if (ParseU8(tok[1], c) && ParseU32(tok[2], tId) && ParseU8(tok[3], r))
+            {
+                req.verb = ClientVerb::SpendTalent;
+                req.talentClass = c;
+                req.talentId = tId;
+                req.talentRank = r;
+            }
+        }
+        else if (tok[0] == "resettalents" && tok.size() == 2)
+        {
+            uint8 c = 0;
+            if (ParseU8(tok[1], c))
+            {
+                req.verb = ClientVerb::ResetTalents;
+                req.talentClass = c;
+            }
         }
         return req;
     }
@@ -178,6 +214,26 @@ namespace Multiclass
         {
             out += ' ';
             out += std::to_string(classId);
+        }
+        return out;
+    }
+
+    // "talents <classId> <freePoints> <talentId:rank> ..." — one message per active class; the rank value
+    // is the point COUNT in that talent (unlearned talents are omitted). The client derives per-tab spent
+    // + tier/prereq gating from these counts.
+    inline std::string SerializeClassTalents(uint8 classId, uint32 freePoints,
+        std::vector<std::pair<uint32, uint32>> const& ranks)
+    {
+        std::string out = "talents ";
+        out += std::to_string(classId);
+        out += ' ';
+        out += std::to_string(freePoints);
+        for (auto const& [talentId, rank] : ranks)
+        {
+            out += ' ';
+            out += std::to_string(talentId);
+            out += ':';
+            out += std::to_string(rank);
         }
         return out;
     }

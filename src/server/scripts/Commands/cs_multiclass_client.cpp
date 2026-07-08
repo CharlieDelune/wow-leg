@@ -80,6 +80,33 @@ public:
                 }
                 break;
             }
+            case Multiclass::ClientVerb::SpendTalent:
+            {
+                if (!enabled)
+                    break;
+                if (!mc.HasActiveClass(req.talentClass))
+                {
+                    SendError(player, "That class isn't active.");
+                    break;
+                }
+                if (!player->SpendClassTalent(req.talentClass, req.talentId, req.talentRank))
+                    SendError(player, "That talent can't be learned right now.");
+                Multiclass::SendClientState(player);   // re-push either way so the UI re-syncs
+                break;
+            }
+            case Multiclass::ClientVerb::ResetTalents:
+            {
+                if (!enabled)
+                    break;
+                if (!mc.HasActiveClass(req.talentClass))
+                {
+                    SendError(player, "That class isn't active.");
+                    break;
+                }
+                player->ResetClassTalents(req.talentClass);   // charges the per-class ladder; may no-op
+                Multiclass::SendClientState(player);
+                break;
+            }
             case Multiclass::ClientVerb::Invalid:
             default:
                 break;

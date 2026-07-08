@@ -19,6 +19,9 @@ end
 function MulticlassUI:SelectTab(id)
 	if ( not TABS[id] ) then return end
 	self.activeTab = id;
+	MulticlassFrame:SetWidth((id == "talents") and 960 or 448);
+	MulticlassFrame:SetHeight((id == "talents") and 620 or 470);
+	if ( MulticlassFrame:IsShown() ) then UpdateUIPanelPositions(MulticlassFrame) end
 	for key, t in pairs(TABS) do
 		if ( key == id ) then t.frame:Show() else t.frame:Hide() end
 	end
@@ -38,7 +41,7 @@ function MulticlassUI:InitTabs()
 	PanelTemplates_SetNumTabs(MulticlassFrame, 4);
 
 	MulticlassUI:RegisterTab("classes", MulticlassClassesTab, function() MulticlassUI:Render() end);
-	MulticlassUI:RegisterTab("talents", MulticlassTalentsTab, nil);
+	MulticlassUI:RegisterTab("talents", MulticlassTalentsTab, function() MulticlassUI:RenderTalents() end);
 	MulticlassUI:RegisterTab("glyphs", MulticlassGlyphsTab, nil);
 	MulticlassUI:RegisterTab("loadouts", MulticlassLoadoutsTab, nil);
 end
@@ -115,6 +118,8 @@ function MulticlassUI:OnFrameEvent(event, arg1, arg2)
 		elseif ( verb == "err" ) then
 			local text = string.match(message, "^err%s+(.*)");
 			UIErrorsFrame:AddMessage(text or "Class change failed.", 1.0, 0.1, 0.1, 1.0);
+		elseif ( verb == "talents" ) then
+			self:OnTalentsMessage(message);
 		end
 	end
 end
@@ -163,6 +168,14 @@ local function BuildView(st)
 	end
 	return owned, order;
 end
+
+-- Exports for MulticlassTalents.lua (keeps the locals above unchanged for this file's own call sites).
+MulticlassUI.ClassName = ClassName;
+MulticlassUI.ClassColor = ClassColor;
+MulticlassUI.CLASS_TOKEN = CLASS_TOKEN;
+MulticlassUI.CLASS_ICON_FILE = CLASS_ICON_FILE;
+MulticlassUI.CLASS_ICON_TC = CLASS_ICON_TC;
+MulticlassUI.BuildView = BuildView;
 
 local function IndexOf(t, v)
 	for i, x in ipairs(t) do

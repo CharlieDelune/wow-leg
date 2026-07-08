@@ -1783,6 +1783,12 @@ public:
     void LearnTalent(uint32 talentId, uint32 talentRank, bool command = false);
     void LearnPetTalent(ObjectGuid petGuid, uint32 talentId, uint32 talentRank);
 
+    // Class-explicit talent spend (P4/SP2): add one rank of `talentId` to `classId`'s tree, keyed entirely
+    // on that active class -- validates active membership, owning class (TalentTab.ClassMask), that class's
+    // own free pool (TalentPointsForLevel(classLevel) - SpentTalentPointsForClass), and tier/prereq. Never
+    // touches PLAYER_CHARACTER_POINTS1 or the client-render class. Returns true on a learn.
+    bool SpendClassTalent(uint8 classId, uint32 talentId, uint32 talentRank);
+
     bool addTalent(uint32 spellId, uint8 addSpecMask, uint8 oldTalentRank);
     void _removeTalent(PlayerTalentMap::iterator& itr, uint8 specMask);
     void _removeTalent(uint32 spellId, uint8 specMask);
@@ -1800,6 +1806,8 @@ public:
     // from TalentTab.ClassMask), and the projection view-adapter that renders the model onto the stock
     // client's single points register + one-class packet for the projected class only.
     [[nodiscard]] uint32 SpentTalentPointsForClass(uint8 classId) const;
+    // {talentId, rank} for every non-removed talent whose owning class == classId (for the client wire).
+    [[nodiscard]] std::vector<std::pair<uint32, uint32>> GetClassTalentRanks(uint8 classId) const;
     void RecomputeProjectedTalentView();
     // Active-set effect seams: bring a class's talents live on activate, strip them (keeping the rows) on
     // bench. Called from the multiclass slot engine (and the login reconcile). Owning class from TalentTab.

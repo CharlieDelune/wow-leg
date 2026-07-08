@@ -14427,6 +14427,23 @@ uint32 Player::SpentTalentPointsForClass(uint8 classId) const
     return spent;
 }
 
+std::vector<std::pair<uint32, uint32>> Player::GetClassTalentRanks(uint8 classId) const
+{
+    std::vector<std::pair<uint32, uint32>> out;
+    if (classId == 0)
+        return out;
+    for (PlayerTalentMap::const_iterator itr = m_talents.begin(); itr != m_talents.end(); ++itr)
+    {
+        if (itr->second->State == PLAYERSPELL_REMOVED)
+            continue;
+        if (Multiclass::TalentOwnerClass(itr->first) != classId)
+            continue;
+        if (TalentSpellPos const* pos = GetTalentSpellPos(itr->first))
+            out.emplace_back(pos->talent_id, pos->rank + 1);   // wire carries the point COUNT (rank index + 1)
+    }
+    return out;
+}
+
 void Player::RecomputeProjectedTalentView()
 {
     // Render the per-class model onto the stock client's single-class view: m_usedTalentCount becomes the
@@ -14931,6 +14948,110 @@ void Player::LearnTalent(uint32 talentId, uint32 talentRank, bool command /*= fa
     }
 
     sScriptMgr->OnPlayerLearnTalents(this, talentId, talentRank, spellId);
+}
+
+bool Player::SpendClassTalent(uint8 classId, uint32 talentId, uint32 talentRank)
+{
+    // Class-explicit spend: no PLAYER_CHARACTER_POINTS1, no projected/slot-0 class -- all gates read classId.
+    if (classId == 0 || !GetMulticlassProfile().HasActiveClass(classId))
+        return false;
+    if (talentRank >= MAX_TALENT_RANK)
+        return false;
+
+    TalentEntry const* talentInfo = sTalentStore.LookupEntry(talentId);
+    if (!talentInfo)
+        return false;
+
+    TalentTabEntry const* talentTabInfo = sTalentTabStore.LookupEntry(talentInfo->TalentTab);
+    if (!talentTabInfo)
+        return false;
+
+    // The talent must belong to exactly this class.
+    if (Multiclass::ClassIdFromMask(talentTabInfo->ClassMask) != classId)
+        return false;
+
+    if (!sScriptMgr->OnPlayerCanLearnTalent(this, talentInfo, talentRank))
+        return false;
+
+    // Current learned rank (count). Active classes share spec 0, so HasTalent(spellId, GetActiveSpec())
+    // reflects any active class's talents.
+    uint32 currentTalentRank = 0;
+    for (uint8 rank = 0; rank < MAX_TALENT_RANK; ++rank)
+        if (talentInfo->RankID[rank] && HasTalent(talentInfo->RankID[rank], GetActiveSpec()))
+        {
+            currentTalentRank = rank + 1;
+            break;
+        }
+
+    // Client sends the 0-based index it wants to add == the current count. Reject anything but the next one.
+    if (currentTalentRank != talentRank)
+        return false;
+
+    // This class's OWN free pool (never PLAYER_CHARACTER_POINTS1).
+    uint32 const pool = Multiclass::TalentPointsForLevel(GetMulticlassProfile().GetClassLevel(classId));
+    uint32 const spent = SpentTalentPointsForClass(classId);
+    if (spent >= pool)
+        return false;
+
+    // Prereq (DependsOn) -- checked against this class's own learned ranks (shared spec 0).
+    if (talentInfo->DependsOn > 0)
+        if (TalentEntry const* depTalentInfo = sTalentStore.LookupEntry(talentInfo->DependsOn))
+        {
+            bool hasEnoughRank = false;
+            for (uint8 rank = talentInfo->DependsOnRank; rank < MAX_TALENT_RANK; ++rank)
+                if (depTalentInfo->RankID[rank] != 0 && HasTalent(depTalentInfo->RankID[rank], GetActiveSpec()))
+                {
+                    hasEnoughRank = true;
+                    break;
+                }
+            if (!hasEnoughRank)
+                return false;
+        }
+
+    // Tier gate: points spent in THIS talent's tab (owning class == classId), shared spec 0.
+    if (talentInfo->Row > 0)
+    {
+        uint32 tabPoints = 0;
+        for (PlayerTalentMap::const_iterator itr = m_talents.begin(); itr != m_talents.end(); ++itr)
+            if (itr->second->State != PLAYERSPELL_REMOVED)
+                if (TalentSpellPos const* pos = GetTalentSpellPos(itr->first))
+                    if (TalentEntry const* ti = sTalentStore.LookupEntry(pos->talent_id))
+                        if (ti->TalentTab == talentInfo->TalentTab)
+                            tabPoints += pos->rank + 1;
+        if (tabPoints < (talentInfo->Row * MAX_TALENT_RANK))
+            return false;
+    }
+
+    uint32 const spellId = talentInfo->RankID[talentRank];
+    if (spellId == 0)
+        return false;
+    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+    if (!spellInfo)
+        return false;
+
+    bool learned = false;
+    if (talentInfo->addToSpellBook)
+        if (!spellInfo->HasAttribute(SPELL_ATTR0_PASSIVE) && !spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL))
+        {
+            learnSpell(spellId);
+            learned = true;
+        }
+    if (!learned)
+        SendLearnPacket(spellId, true);
+
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        if (spellInfo->Effects[i].Effect == SPELL_EFFECT_LEARN_SPELL)
+            if (sSpellMgr->IsAdditionalTalentSpell(spellInfo->Effects[i].TriggerSpell))
+                learnSpell(spellInfo->Effects[i].TriggerSpell);
+
+    addTalent(spellId, GetActiveSpecMask(), currentTalentRank);
+
+    // Refresh the stock single-class point field for whatever class the client currently renders (so the
+    // native register stays consistent) without ever driving the spend off it.
+    RecomputeProjectedTalentView();
+
+    sScriptMgr->OnPlayerLearnTalents(this, talentId, talentRank, spellId);
+    return true;
 }
 
 void Player::LearnPetTalent(ObjectGuid petGuid, uint32 talentId, uint32 talentRank)

@@ -143,8 +143,10 @@ VehicleMenuBar.xml
 AlternatePowerBar.xml
 AnimationSystem.lua
 
+MulticlassTalentData.lua
 MulticlassIdentity.lua
 MulticlassFrame.xml
+MulticlassTalents.lua
 MulticlassIdentityHooks.lua
 MulticlassProjectionDisplay.lua
 MulticlassDiegetic.lua

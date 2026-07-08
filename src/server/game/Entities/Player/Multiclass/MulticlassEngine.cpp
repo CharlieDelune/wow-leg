@@ -696,6 +696,24 @@ namespace Multiclass
         WorldPacket wordData;
         ChatHandler::BuildChatPacket(wordData, CHAT_MSG_WHISPER, LANG_ADDON, player, player, wordPayload);
         player->GetSession()->SendPacket(&wordData);
+
+        // P4/SP2: one talent snapshot per ACTIVE class (ranks + that class's own free pool) for the
+        // multi-tree UI. Only when enabled, so a byte-vanilla client never receives these.
+        if (enabled)
+        {
+            MulticlassProfile const& mc = player->GetMulticlassProfile();
+            for (uint8 const classId : mc.GetActiveClasses())
+            {
+                uint32 const pool = TalentPointsForLevel(mc.GetClassLevel(classId));
+                uint32 const spent = player->SpentTalentPointsForClass(classId);
+                uint32 const freePoints = pool > spent ? pool - spent : 0u;
+                std::string tPayload(kClientMsgTag);
+                tPayload += SerializeClassTalents(classId, freePoints, player->GetClassTalentRanks(classId));
+                WorldPacket tData;
+                ChatHandler::BuildChatPacket(tData, CHAT_MSG_WHISPER, LANG_ADDON, player, player, tPayload);
+                player->GetSession()->SendPacket(&tData);
+            }
+        }
     }
 
     void SendPeer(Player* recipient, std::string_view name, std::vector<uint8> const& active)
