@@ -4066,16 +4066,11 @@ bool Player::resetTalents(bool noResetCost)
     return true;
 }
 
-uint32 Player::ResetClassTalentsCost(uint8 classId) const
+uint32 Player::ResetClassTalentsCost(uint8 /*classId*/) const
 {
-    // Per-class reset ladder cost for classId (§4.3). The single source of truth for both the charge
-    // (ResetClassTalents) and the confirm dialog (SendTalentWipeConfirm). lastTime == 0 (never reset) is
-    // treated as one full decay period elapsed, so a first reset never spuriously decays.
-    uint32 const decayPeriod = sWorld->getIntConfig(CONFIG_TALENTS_RESET_DECAY_DAYS) * DAY;
-    uint32 const lastCost = GetMulticlassProfile().GetTalentResetCost(classId);
-    uint32 const lastTime = GetMulticlassProfile().GetTalentResetTime(classId);
-    uint32 const sinceReset = lastTime ? uint32(GameTime::GetGameTime().count() - lastTime) : decayPeriod;
-    return Multiclass::TalentResetCost(lastCost, sinceReset, decayPeriod);
+    // Talent removal/reset is free (Loadouts Phase 0). The per-class gold ladder is retired; the callers
+    // (the charge path and the SendTalentWipeConfirm dialog) now see 0.
+    return 0;
 }
 
 bool Player::ResetClassTalents(uint8 classId, bool noResetCost /*= false*/)
@@ -4096,19 +4091,6 @@ bool Player::ResetClassTalents(uint8 classId, bool noResetCost /*= false*/)
     uint32 const spent = SpentTalentPointsForClass(classId);
     if (spent == 0)
         return false;
-
-    // Per-class reset ladder (§4.3). lastTime == 0 (never reset) -> treat as one full period elapsed so a
-    // first reset never spuriously decays.
-    uint32 resetCost = 0;
-    if (!noResetCost && !sWorld->getBoolConfig(CONFIG_NO_RESET_TALENT_COST))
-    {
-        resetCost = ResetClassTalentsCost(classId);   // per-class ladder; SAME value SendTalentWipeConfirm showed
-        if (!HasEnoughMoney(resetCost))
-        {
-            SendBuyError(BUY_ERR_NOT_ENOUGHT_MONEY, 0, 0, 0);
-            return false;
-        }
-    }
 
     RemovePet(nullptr, PET_SAVE_NOT_IN_SLOT, true);
 
@@ -4156,21 +4138,9 @@ bool Player::ResetClassTalents(uint8 classId, bool noResetCost /*= false*/)
 
     AutoUnequipOffhandIfNeed();
 
-    // Refund: recompute the projected view (free points + packet) from the now-smaller model.
+    // Refund: recompute the projected view (free points + packet) from the now-smaller model. Free -- the
+    // per-class gold reset ladder is retired (Loadouts Phase 0).
     RecomputeProjectedTalentView();
-
-    if (!noResetCost)
-    {
-        ModifyMoney(-(int32)resetCost);
-        UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_GOLD_SPENT_FOR_TALENTS, resetCost);
-        UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_NUMBER_OF_TALENT_RESETS, 1);
-
-        // Advance ONLY this class's ladder (resetCost == 0 when NoResetTalentsCost is on -> native-style
-        // ladder reset to 0). Persist immediately so the escalation survives a crash before the next save.
-        GetMulticlassProfile().SetTalentResetLadder(classId, resetCost, uint32(GameTime::GetGameTime().count()));
-        SaveMulticlassProfile();
-    }
-
     return true;
 }
 
@@ -15123,6 +15093,95 @@ bool Player::SpendClassTalent(uint8 classId, uint32 talentId, uint32 talentRank)
 
     sScriptMgr->OnPlayerLearnTalents(this, talentId, talentRank, spellId);
     return true;
+}
+
+bool Player::RemoveClassTalent(uint8 classId, uint32 talentId)
+{
+    if (classId == 0 || !GetMulticlassProfile().HasActiveClass(classId))
+        return false;
+
+    // Gather this class's current spend as pure records (keyed by TalentEntry id).
+    std::vector<Multiclass::TalentRecord> records;
+    for (auto const& [spellId, tal] : m_talents)
+    {
+        if (tal->State == PLAYERSPELL_REMOVED)
+            continue;
+        if (Multiclass::TalentOwnerClass(spellId) != classId)
+            continue;
+        TalentSpellPos const* pos = GetTalentSpellPos(spellId);
+        if (!pos)
+            continue;
+        TalentEntry const* ti = sTalentStore.LookupEntry(pos->talent_id);
+        if (!ti)
+            continue;
+        records.push_back({ pos->talent_id, ti->TalentTab, ti->Row, ti->DependsOn, ti->DependsOnRank, uint32(pos->rank + 1) });
+    }
+
+    auto const result = Multiclass::ComputeTalentRemovalCascade(records, talentId, 1);
+    std::unordered_map<uint32, uint32> newRank;
+    for (auto const& [tid, nr] : result)
+        newRank[tid] = nr;
+
+    // Strip a talent's current rank row entirely (mirrors ResetClassTalents' inner-loop body).
+    auto stripFully = [this](uint32 rankSpellId, TalentEntry const* ti)
+    {
+        _removeTalentAurasAndSpells(rankSpellId);
+        SpellInfo const* si = sSpellMgr->GetSpellInfo(rankSpellId);
+        bool removed = false;
+        if (ti->addToSpellBook && !si->HasAttribute(SPELL_ATTR0_PASSIVE) && !si->HasEffect(SPELL_EFFECT_LEARN_SPELL))
+        {
+            removeSpell(rankSpellId, SPEC_MASK_ALL, false);
+            removed = true;
+        }
+        if (!removed)
+            SendLearnPacket(rankSpellId, false);
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            if (si->Effects[i].Effect == SPELL_EFFECT_LEARN_SPELL)
+                if (sSpellMgr->IsAdditionalTalentSpell(si->Effects[i].TriggerSpell))
+                    removeSpell(si->Effects[i].TriggerSpell, SPEC_MASK_ALL, false);
+        _removeTalent(rankSpellId, SPEC_MASK_ALL);
+    };
+
+    // Relearn a talent fresh at targetRank (1..5) (mirrors SpendClassTalent's apply, old rank 0).
+    auto relearn = [this](TalentEntry const* ti, uint32 targetRank)
+    {
+        uint32 spellId = ti->RankID[targetRank - 1];
+        if (!spellId)
+            return;
+        SpellInfo const* si = sSpellMgr->GetSpellInfo(spellId);
+        if (!si)
+            return;
+        bool learned = false;
+        if (ti->addToSpellBook && !si->HasAttribute(SPELL_ATTR0_PASSIVE) && !si->HasEffect(SPELL_EFFECT_LEARN_SPELL))
+        {
+            learnSpell(spellId);
+            learned = true;
+        }
+        if (!learned)
+            SendLearnPacket(spellId, true);
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            if (si->Effects[i].Effect == SPELL_EFFECT_LEARN_SPELL)
+                if (sSpellMgr->IsAdditionalTalentSpell(si->Effects[i].TriggerSpell))
+                    learnSpell(si->Effects[i].TriggerSpell);
+        addTalent(spellId, GetActiveSpecMask(), 0);
+    };
+
+    bool anyChange = false;
+    for (auto const& rec : records)
+    {
+        uint32 const nr = newRank[rec.talentId];
+        if (nr == rec.rank)
+            continue;
+        anyChange = true;
+        TalentEntry const* ti = sTalentStore.LookupEntry(rec.talentId);
+        stripFully(ti->RankID[rec.rank - 1], ti);   // remove current rank row + auras + spellbook
+        if (nr > 0)
+            relearn(ti, nr);                          // re-add at the (lower) surviving rank
+    }
+
+    if (anyChange)
+        RecomputeProjectedTalentView();
+    return anyChange;
 }
 
 void Player::LearnPetTalent(ObjectGuid petGuid, uint32 talentId, uint32 talentRank)

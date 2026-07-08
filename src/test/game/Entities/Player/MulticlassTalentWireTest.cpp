@@ -54,6 +54,26 @@ TEST(MulticlassTalentWireTest, ParseResetTalents_wrongArity_isInvalid)
     EXPECT_EQ(ParseClientRequest("resettalents 1 2").verb, ClientVerb::Invalid);
 }
 
+TEST(MulticlassTalentWireTest, ParseRemoveTalent_valid)
+{
+    ClientRequest const r = ParseClientRequest("removetalent 8 1953");
+    EXPECT_EQ(r.verb, ClientVerb::RemoveTalent);
+    EXPECT_EQ(r.talentClass, 8);
+    EXPECT_EQ(r.talentId, 1953u);
+}
+
+TEST(MulticlassTalentWireTest, ParseRemoveTalent_wrongArity_isInvalid)
+{
+    EXPECT_EQ(ParseClientRequest("removetalent 8").verb, ClientVerb::Invalid);
+    EXPECT_EQ(ParseClientRequest("removetalent 8 1953 2").verb, ClientVerb::Invalid);
+}
+
+TEST(MulticlassTalentWireTest, ParseRemoveTalent_badNumber_isInvalid)
+{
+    EXPECT_EQ(ParseClientRequest("removetalent x 1953").verb, ClientVerb::Invalid);
+    EXPECT_EQ(ParseClientRequest("removetalent 8 19ab").verb, ClientVerb::Invalid);
+}
+
 TEST(MulticlassTalentWireTest, SerializeClassTalents_formatsRanks)
 {
     std::vector<std::pair<uint32, uint32>> ranks = { {1234, 2}, {1235, 1} };

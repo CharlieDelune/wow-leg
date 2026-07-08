@@ -31,7 +31,7 @@ namespace Multiclass
     // On-wire body prefix shared by every MCLS addon-channel message: "MCLS\tpayload".
     inline constexpr std::string_view kClientMsgTag = "MCLS\t";
 
-    enum class ClientVerb : uint8 { Invalid, Hello, SetOrder, Whois, SpendTalent, ResetTalents, SocketGlyph, RemoveGlyph };
+    enum class ClientVerb : uint8 { Invalid, Hello, SetOrder, Whois, SpendTalent, ResetTalents, SocketGlyph, RemoveGlyph, RemoveTalent };
 
     struct ClientRequest
     {
@@ -139,6 +139,16 @@ namespace Multiclass
             {
                 req.verb = ClientVerb::ResetTalents;
                 req.talentClass = c;
+            }
+        }
+        else if (tok[0] == "removetalent" && tok.size() == 3)
+        {
+            uint8 c = 0; uint32 tId = 0;
+            if (ParseU8(tok[1], c) && ParseU32(tok[2], tId))
+            {
+                req.verb = ClientVerb::RemoveTalent;
+                req.talentClass = c;
+                req.talentId = tId;
             }
         }
         else if (tok[0] == "socketglyph" && tok.size() == 4)

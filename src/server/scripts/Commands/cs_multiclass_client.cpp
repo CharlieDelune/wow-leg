@@ -104,7 +104,20 @@ public:
                     SendError(player, "That class isn't active.");
                     break;
                 }
-                player->ResetClassTalents(req.talentClass);   // charges the per-class ladder; may no-op
+                player->ResetClassTalents(req.talentClass);   // free bulk reset (Loadouts Phase 0); may no-op
+                Multiclass::SendClientState(player);
+                break;
+            }
+            case Multiclass::ClientVerb::RemoveTalent:
+            {
+                if (!enabled)
+                    break;
+                if (!mc.HasActiveClass(req.talentClass))
+                {
+                    SendError(player, "That class isn't active.");
+                    break;
+                }
+                player->RemoveClassTalent(req.talentClass, req.talentId);   // free per-point removal + cascade
                 Multiclass::SendClientState(player);
                 break;
             }

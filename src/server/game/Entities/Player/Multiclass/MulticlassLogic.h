@@ -25,6 +25,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include "Define.h"
 
@@ -392,6 +393,73 @@ namespace Multiclass
         std::string upper(word);
         upper[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(upper[0])));
         ReplaceClassToken(text, upper, word);
+    }
+
+    // ---- Talent-removal cascade (Loadouts Phase 0) ------------------------------------------------
+    // native PLAYER_TALENTS_PER_TIER; tier gate = tier * this (kept here so this header stays DBC-free)
+    inline constexpr uint32 TalentPointsPerTier = 5;
+
+    struct TalentRecord
+    {
+        uint32 talentId;   // TalentEntry.TalentID
+        uint32 tab;        // TalentEntry.TalentTab
+        uint32 tier;       // TalentEntry.Row (0-based)
+        uint32 dep;        // TalentEntry.DependsOn (0 = none)
+        uint32 depRank;    // TalentEntry.DependsOnRank (0-based)
+        uint32 rank;       // current point count 1..5
+    };
+
+    // Remove `count` points from `targetId`, then cascade-invalidate any still-learned talent whose tier
+    // gate (total points in its tab >= tier * TalentPointsPerTier) or prerequisite (dep held at rank >=
+    // depRank + 1) is no longer met, iterating to a fixpoint. The tier gate mirrors SpendClassTalent's
+    // (total tab points), so any surviving config is one the spend path also accepts. Returns the
+    // resulting point count for every input talent (0 == removed), in input order.
+    inline std::vector<std::pair<uint32, uint32>> ComputeTalentRemovalCascade(
+        std::vector<TalentRecord> const& learned, uint32 targetId, uint32 count)
+    {
+        std::unordered_map<uint32, uint32> rank;
+        std::unordered_map<uint32, TalentRecord const*> byId;
+        for (auto const& r : learned)
+        {
+            rank[r.talentId] = r.rank;
+            byId[r.talentId] = &r;
+        }
+
+        if (auto it = rank.find(targetId); it != rank.end())
+            it->second = count >= it->second ? 0u : it->second - count;
+
+        for (bool changed = true; changed; )
+        {
+            changed = false;
+            std::unordered_map<uint32, uint32> tabPoints;
+            for (auto const& kv : rank)
+                if (kv.second)
+                    tabPoints[byId[kv.first]->tab] += kv.second;
+
+            for (auto& kv : rank)
+            {
+                if (!kv.second)
+                    continue;
+                TalentRecord const& rec = *byId[kv.first];
+                bool invalid = rec.tier && tabPoints[rec.tab] < rec.tier * TalentPointsPerTier;
+                if (!invalid && rec.dep)
+                {
+                    auto d = rank.find(rec.dep);
+                    invalid = (d == rank.end() ? 0u : d->second) < rec.depRank + 1;
+                }
+                if (invalid)
+                {
+                    kv.second = 0;
+                    changed = true;
+                }
+            }
+        }
+
+        std::vector<std::pair<uint32, uint32>> out;
+        out.reserve(learned.size());
+        for (auto const& r : learned)
+            out.emplace_back(r.talentId, rank[r.talentId]);
+        return out;
     }
 }
 

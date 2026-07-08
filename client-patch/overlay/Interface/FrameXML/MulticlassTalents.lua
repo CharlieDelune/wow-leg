@@ -211,9 +211,15 @@ local function RenderTree(slot, tabId, classId, xBase)
 				b.rankText:SetTextColor(GRAY_FONT_COLOR.r, GRAY_FONT_COLOR.g, GRAY_FONT_COLOR.b);
 			end
 
-			b:SetScript("OnClick", function()
-				-- send the 0-based index being added == current count; server validates + re-pushes.
-				MulticlassUI:Send("spendtalent " .. classId .. " " .. tid .. " " .. cur);
+			b:RegisterForClicks("LeftButtonUp", "RightButtonUp");
+			b:SetScript("OnClick", function(self, button)
+				if ( button == "RightButton" ) then
+					-- free per-point removal; server cascades prereq/tier and re-pushes the whole class.
+					if ( cur > 0 ) then MulticlassUI:Send("removetalent " .. classId .. " " .. tid) end
+				else
+					-- send the 0-based index being added == current count; server validates + re-pushes.
+					MulticlassUI:Send("spendtalent " .. classId .. " " .. tid .. " " .. cur);
+				end
 			end);
 			b:Show();
 		end

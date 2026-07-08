@@ -1788,6 +1788,9 @@ public:
     // own free pool (TalentPointsForLevel(classLevel) - SpentTalentPointsForClass), and tier/prereq. Never
     // touches PLAYER_CHARACTER_POINTS1 or the client-render class. Returns true on a learn.
     bool SpendClassTalent(uint8 classId, uint32 talentId, uint32 talentRank);
+    // Free per-point removal for classId's talent talentId (Loadouts Phase 0): removes one point and
+    // cascades any prerequisite/tier invalidations to a fixpoint. No gold. True if anything changed.
+    bool RemoveClassTalent(uint8 classId, uint32 talentId);
 
     bool addTalent(uint32 spellId, uint8 addSpecMask, uint8 oldTalentRank);
     void _removeTalent(PlayerTalentMap::iterator& itr, uint8 specMask);
