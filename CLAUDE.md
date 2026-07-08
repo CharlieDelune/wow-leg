@@ -18,7 +18,7 @@ A character is a **SET of active classes**, each fully real: its own spells, sta
 ## Working style (fork)
 
 - **Prove, don't assert.** Never state how the server or client behaves at a boundary as fact without instrumenting it. Recalled memories and this file describe *intent*; verify a named file/function/flag still exists before relying on it.
-- **Run the unit suite yourself** on any server or test change — build `unit_tests` and run it (per the build rule below, confirm before the first compile), rather than offloading to the user or substituting code-review for execution. Unit tests are yours; in-game gates are the user's.
+- **Run the unit suite yourself** on any server or test change — build `unit_tests` and run it, then report real pass/fail counts; never offload it to the user or substitute code-review for execution. **Never ask permission to build or run tests** (including a `worldserver` link-check of a code change) — the "don't build unless asked" rule below is about not gratuitously building features, and never gates a build you run to verify your own work. Unit tests are yours; in-game gates are the user's.
 - **No pre-production caution.** Unreleased server, no live players. Interim weirdness (stat inflation, transient behaviour change, a dropped gold sink) is not a cost — always pick the long-term-correct design.
 
 ## Agent rules
