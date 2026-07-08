@@ -1,6 +1,25 @@
 # CLAUDE.md
 
-AzerothCore is a C++ MMORPG server emulator for World of Warcraft 3.3.5a (WotLK), built with CMake, backed by MySQL.
+This is a **multiclass fork** of AzerothCore — a C++ MMORPG server emulator for World of Warcraft 3.3.5a (WotLK), built with CMake, backed by MySQL, plus a custom client patch (FrameXML/Lua/DBC shipped in a patch MPQ). The build, repository-layout, and code-style guidance further down is stock-accurate and still applies; the **class model is not stock** — read the fork rules first, they override every single-class assumption in this file.
+
+## The Multiclass fork — the class model is NOT stock WoW
+
+A character is a **SET of active classes**, each fully real: its own spells, stats, talents, glyphs, level, and (WIP) pet kits. The character is their union. This is the project's north star and it overrides every stock-WoW single-class assumption below.
+
+**Hard invariants — non-negotiable:**
+
+1. **"Projected class" is a DEAD concept. Never use it — in code, designs, questions, or narration.** `getClass()` / character slot 0 is a *going-away client-display shim*, never load-bearing in logic. Key every decision on the active SET and per-class state. To find "which class owns X," derive it from the entity: a talent → its `TalentTab.ClassMask`; a glyph → its item `SubClass`. There is ALWAYS a class-explicit alternative — if you are reaching for the rendered/slot-0 class as a fallback, you have found the dead idea; stop and derive it properly.
+2. **The creation ("render") class is a normal, fully-removable slot** — not privileged in any mask, lock, or guard. Bench it and its spells/skills go, like any class. There is no "native class."
+3. **Server truth is per-class; the single-class 3.3.5 client is fed by thin, replaceable adapters** (view registers + `MulticlassClientProtocol` wire messages). Never bend the model to the client's single-class shape — add or extend an adapter instead.
+4. **The custom client is a first-class surface.** Client changes live in `client-patch/overlay/` (FrameXML/Lua/DBC), shipped in a patch MPQ; rebuilding and redeploying it is trivial and never a cost to weigh against a server-side hack — judge client fixes on correctness alone. When client files change, say "**redeploy the MPQ**" and stop — do not prescribe how, and note a `/reload` does NOT pick up MPQ (FrameXML/Lua/DBC) changes.
+
+**Code map:** engine in `src/server/game/Entities/Player/Multiclass/` (`MulticlassLogic.h`, `MulticlassEngine.cpp`, `MulticlassState.cpp`, `MulticlassClientProtocol.h`); per-class state also threads through `Player.{h,cpp}` and `SpellEffects.cpp`. Client patch in `client-patch/` (`overlay/` = byte-for-byte MPQ mirror, CRLF + tabs + ASCII; `tools/` = DBC→Lua generators). GM surface: `.multiclass …` (`src/server/scripts/Commands/cs_multiclass*.cpp`). Specs/plans in `docs/superpowers/`.
+
+## Working style (fork)
+
+- **Prove, don't assert.** Never state how the server or client behaves at a boundary as fact without instrumenting it. Recalled memories and this file describe *intent*; verify a named file/function/flag still exists before relying on it.
+- **Run the unit suite yourself** on any server or test change — build `unit_tests` and run it (per the build rule below, confirm before the first compile), rather than offloading to the user or substituting code-review for execution. Unit tests are yours; in-game gates are the user's.
+- **No pre-production caution.** Unreleased server, no live players. Interim weirdness (stat inflation, transient behaviour change, a dropped gold sink) is not a cost — always pick the long-term-correct design.
 
 ## Agent rules
 
@@ -27,7 +46,7 @@ Tests (Google Test, in `src/test/`): configure with `-DBUILD_TESTING=ON`, then `
 ## Repository layout
 
 - `src/common/` — networking (Asio), crypto, config, logging, shared utilities.
-- `src/server/game/` — core gameplay; compiled into worldserver.
+- `src/server/game/` — core gameplay; compiled into worldserver. **Multiclass engine lives in `src/server/game/Entities/Player/Multiclass/`** (see the fork rules).
 - `src/server/scripts/` — content scripts grouped by region (`EasternKingdoms/`, `Northrend/`, …), class (`Spells/spell_mage.cpp`, …), and domain (`Commands/`, `Pet/`, `OutdoorPvP/`, `World/`).
 - `src/server/database/` — DB abstraction and schema updater.
 - `src/server/shared/` — code shared by auth and world servers.
@@ -38,6 +57,8 @@ Tests (Google Test, in `src/test/`): configure with `-DBUILD_TESTING=ON`, then `
 - `apps/` — helper scripts; `apps/codestyle/` holds the lint scripts (see below).
 - `conf/dist/` — distributed config templates; `conf/*.conf` is gitignored.
 - `deps/` — vendored third-party dependencies.
+- `client-patch/` — the custom client: `overlay/` mirrors the patch MPQ byte-for-byte (FrameXML/Lua/DBC; CRLF + tabs + ASCII), `tools/` holds the DBC→Lua generators. See the fork rules.
+- `docs/superpowers/` — brainstorm specs (`specs/`) and implementation plans (`plans/`).
 
 ## Adding SQL updates
 
