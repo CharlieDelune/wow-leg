@@ -147,6 +147,7 @@ MulticlassTalentData.lua
 MulticlassIdentity.lua
 MulticlassFrame.xml
 MulticlassTalents.lua
+MulticlassGlyphIcons.lua
 MulticlassGlyphs.lua
 MulticlassIdentityHooks.lua
 MulticlassProjectionDisplay.lua

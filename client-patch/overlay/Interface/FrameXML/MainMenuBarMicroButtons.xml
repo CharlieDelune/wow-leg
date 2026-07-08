@@ -157,7 +157,7 @@
 	</Button>
 	<Button name="MulticlassMicroButton" inherits="MainMenuBarMicroButton" parent="MainMenuBarArtFrame" hidden="true">
 		<Anchors>
-			<Anchor point="BOTTOMLEFT" relativeTo="AchievementMicroButton" relativePoint="BOTTOMRIGHT">
+			<Anchor point="BOTTOMLEFT" relativeTo="SpellbookMicroButton" relativePoint="BOTTOMRIGHT">
 				<Offset>
 					<AbsDimension x="-3" y="0"/>
 				</Offset>
@@ -166,15 +166,16 @@
 		<Scripts>
 			<OnLoad>
 				LoadMicroButtonTextures(self, "Talents");	-- v1 stand-in art; swap for UI-MicroButton-Multiclass-*
-				self.tooltipText = MicroButtonTooltipText("Classes", "TOGGLEMULTICLASS");
-				self.newbieText = "Switch which of your classes are active.";
+				self.tooltipText = MicroButtonTooltipText("Classes", "TOGGLETALENTS");
+				self.newbieText = "Manage active classes, talents, glyphs, and loadouts.";
+				self:RegisterEvent("UPDATE_BINDINGS");
 			</OnLoad>
 			<OnClick>
 				ToggleMulticlassFrame();
 			</OnClick>
 			<OnEvent>
 				if ( event == "UPDATE_BINDINGS" ) then
-					self.tooltipText = MicroButtonTooltipText("Classes", "TOGGLEMULTICLASS");
+					self.tooltipText = MicroButtonTooltipText("Classes", "TOGGLETALENTS");
 				else
 					UpdateMicroButtons();
 				end
@@ -183,7 +184,7 @@
 	</Button>
 	<Button name="QuestLogMicroButton" inherits="MainMenuBarMicroButton" parent="MainMenuBarArtFrame">
 		<Anchors>
-			<Anchor point="BOTTOMLEFT" relativeTo="MulticlassMicroButton" relativePoint="BOTTOMRIGHT">
+			<Anchor point="BOTTOMLEFT" relativeTo="AchievementMicroButton" relativePoint="BOTTOMRIGHT">
 				<Offset>
 					<AbsDimension x="-3" y="0"/>
 				</Offset>

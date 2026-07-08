@@ -2,6 +2,15 @@
 MulticlassUI = MulticlassUI or {};
 MulticlassUI.glyphState = MulticlassUI.glyphState or {};   -- [classId] = { [slot] = { spell, enabled } }
 
+StaticPopupDialogs["MULTICLASS_REMOVE_GLYPH"] = {
+	text = "Remove %s?",
+	button1 = YES, button2 = NO,
+	OnAccept = function(self, data)
+		MulticlassUI:Send("removeglyph " .. data.classId .. " " .. data.slot);
+	end,
+	timeout = 0, whileDead = 1, hideOnEscape = 1,
+};
+
 -- "glyphs <classId> <slot>:<spell>:<enabled> ..." -> store; re-render if this class's ring is showing.
 function MulticlassUI:OnGlyphsMessage(message)
 	local it = string.gmatch(message, "%S+");
@@ -127,6 +136,27 @@ local function EnsureSocket(id)
 	end);
 	b:SetScript("OnLeave", function() GameTooltip:Hide() end);
 
+	b:RegisterForClicks("RightButtonUp");
+	b:RegisterForDrag("LeftButton");
+	local function TryPlaceFromCursor()
+		local ctype, itemId = GetCursorInfo();
+		if ( ctype == "item" and itemId ) then
+			-- classId = the selected ring; the server validates the item SubClass matches the class + consumes it.
+			MulticlassUI:Send("socketglyph " .. MulticlassUI.glyphSelectedClass .. " " .. b.meta.slot .. " " .. itemId);
+			ClearCursor();
+		end
+	end
+	b:SetScript("OnReceiveDrag", TryPlaceFromCursor);
+	b:SetScript("OnMouseUp", function(self, button)
+		if ( button == "LeftButton" and CursorHasItem() ) then TryPlaceFromCursor() end
+	end);
+	b:SetScript("OnClick", function(self, button)
+		if ( button == "RightButton" and self.spell ) then
+			local name = GetSpellInfo(self.spell) or "this glyph";
+			StaticPopup_Show("MULTICLASS_REMOVE_GLYPH", name, nil, { classId = MulticlassUI.glyphSelectedClass, slot = self.meta.slot });
+		end
+	end);
+
 	sockets[id] = b;
 	return b;
 end
@@ -173,7 +203,9 @@ local function RenderSocket(id, classId)
 		b.rune:Show();
 		if ( b.spell ) then
 			b.rune:SetTexCoord(unpack(RUNE_TC[id]));
-			local _, _, icon = GetSpellInfo(b.spell);
+			-- the glyph's real rune (GlyphProperties.SpellIconID, baked in MulticlassGlyphIcons); the effect
+			-- spell's own GetSpellInfo icon is only the generic inscription icon.
+			local icon = MulticlassUI.GLYPH_ICON and MulticlassUI.GLYPH_ICON[b.spell] or select(3, GetSpellInfo(b.spell));
 			b.icon:SetTexture(icon);
 			b.icon:SetVertexColor(unpack(sty.tint));
 			b.icon:Show();
@@ -221,4 +253,29 @@ function MulticlassUI:RenderGlyphs()
 		math.floor(c.r * 255), math.floor(c.g * 255), math.floor(c.b * 255), self.ClassName(classId)));
 
 	for id = 1, 6 do RenderSocket(id, classId) end
+end
+
+-- The stock client auto-opens the native GlyphFrame on glyph-item use (USE_GLYPH) / inscription level. When
+-- multiclass is on, our tab is the only glyph UI, so co-opt the open (mirrors the ToggleTalentFrame co-opt);
+-- when off, fall back to stock so the client is byte-vanilla. Socketing is drag/click-to-place on our ring.
+local _stockToggleGlyphFrame = ToggleGlyphFrame;
+function ToggleGlyphFrame()
+	if ( not (MulticlassUI.state and MulticlassUI.state.enable) ) then
+		if ( _stockToggleGlyphFrame ) then return _stockToggleGlyphFrame() end
+		return;
+	end
+	if ( MulticlassFrame:IsShown() and MulticlassUI.activeTab == "glyphs" ) then
+		HideUIPanel(MulticlassFrame);
+	else
+		ShowUIPanel(MulticlassFrame);
+		MulticlassUI:SelectTab("glyphs");
+	end
+end
+local _stockOpenGlyphFrame = OpenGlyphFrame;
+function OpenGlyphFrame()
+	if ( not (MulticlassUI.state and MulticlassUI.state.enable) ) then
+		if ( _stockOpenGlyphFrame ) then return _stockOpenGlyphFrame() end
+		return;
+	end
+	-- swallow: our tab is opened deliberately, not on glyph-item use
 end

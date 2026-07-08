@@ -109,6 +109,9 @@ function UpdateMicroButtons()
 	end
 
 	if ( MulticlassUI and MulticlassUI.state and MulticlassUI.state.enable ) then
+		-- our button REPLACES the native Talents button: it takes the Talent slot and opens the unified
+		-- Classes/Talents/Glyphs frame, so hide the native Talents button while the feature is on.
+		TalentMicroButton:Hide();
 		MulticlassMicroButton:Show();
 		if ( MulticlassFrame and MulticlassFrame:IsShown() ) then
 			MulticlassMicroButton:SetButtonState("PUSHED", 1);
@@ -117,6 +120,7 @@ function UpdateMicroButtons()
 		end
 	else
 		MulticlassMicroButton:Hide();	-- feature off / no snapshot yet: byte-vanilla look
+		TalentMicroButton:Show();
 	end
 
 	-- Keyring microbutton

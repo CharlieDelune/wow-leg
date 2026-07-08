@@ -19,8 +19,8 @@ end
 function MulticlassUI:SelectTab(id)
 	if ( not TABS[id] ) then return end
 	self.activeTab = id;
-	MulticlassFrame:SetWidth((id == "talents") and 960 or (id == "glyphs") and 440 or 448);
-	MulticlassFrame:SetHeight((id == "talents") and 620 or (id == "glyphs") and 530 or 470);
+	MulticlassFrame:SetWidth((id == "talents") and 960 or (id == "glyphs") and 420 or 414);
+	MulticlassFrame:SetHeight((id == "talents") and 620 or (id == "glyphs") and 530 or 300);
 	if ( MulticlassFrame:IsShown() ) then UpdateUIPanelPositions(MulticlassFrame) end
 	for key, t in pairs(TABS) do
 		if ( key == id ) then t.frame:Show() else t.frame:Hide() end
