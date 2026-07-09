@@ -1802,6 +1802,12 @@ public:
     bool SetLoadoutDescription(uint32 loadoutId, std::string const& text);
     bool SetLoadoutIcon(uint32 loadoutId, std::string const& texture);
     bool DeleteLoadout(uint32 loadoutId);
+    // Loadout slot economy (Loadouts Phase 2): capacity = free config baseline + purchased ratchet.
+    enum class BuyLoadoutSlotResult { Success, NotManaged, NotEnoughGold };
+    [[nodiscard]] uint32 GetLoadoutCapacity() const;          // free (config) + purchased ratchet
+    [[nodiscard]] uint32 NextLoadoutSlotCostCopper() const;   // cost of the next purchasable slot
+    BuyLoadoutSlotResult BuyLoadoutSlot(uint32& costCharged); // charges escalating gold, ratchets +1
+    void GrantLoadoutSlots(uint32 n);                         // GM free grant of n slots
 
     bool addTalent(uint32 spellId, uint8 addSpecMask, uint8 oldTalentRank);
     void _removeTalent(PlayerTalentMap::iterator& itr, uint8 specMask);

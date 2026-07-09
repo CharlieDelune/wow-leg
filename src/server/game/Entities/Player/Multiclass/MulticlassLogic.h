@@ -486,6 +486,14 @@ namespace Multiclass
         return count < capacity;
     }
 
+    // Copper cost of the next purchasable loadout slot: base + alreadyPurchased * step, saturating so an
+    // absurd ratchet can never wrap. Pure so the escalation curve is unit-tested independent of config.
+    [[nodiscard]] inline uint32 LoadoutSlotCostCopper(uint32 alreadyPurchased, uint32 baseCopper, uint32 stepCopper)
+    {
+        uint64_t const cost = uint64_t(baseCopper) + uint64_t(alreadyPurchased) * uint64_t(stepCopper);
+        return cost > uint64_t(UINT32_MAX) ? UINT32_MAX : uint32(cost);
+    }
+
     struct DeleteResolution
     {
         bool allowed;

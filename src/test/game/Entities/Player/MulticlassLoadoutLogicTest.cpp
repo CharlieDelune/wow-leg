@@ -66,3 +66,16 @@ TEST(LoadoutLogic, DeleteUnknownIdRejected)
 {
     EXPECT_FALSE(ResolveDeleteTarget(mk({1, 2}), 9, 1).allowed);
 }
+
+TEST(LoadoutLogic, SlotCostEscalatesLinearly)
+{
+    EXPECT_EQ(LoadoutSlotCostCopper(0, 1000000, 1000000), 1000000u);   // first extra = base
+    EXPECT_EQ(LoadoutSlotCostCopper(1, 1000000, 1000000), 2000000u);   // +1 step
+    EXPECT_EQ(LoadoutSlotCostCopper(3, 1000000, 1000000), 4000000u);
+    EXPECT_EQ(LoadoutSlotCostCopper(2, 1000000, 0), 1000000u);         // zero step = flat cost
+}
+
+TEST(LoadoutLogic, SlotCostSaturates)
+{
+    EXPECT_EQ(LoadoutSlotCostCopper(4000000000u, 1000000u, 1000000u), UINT32_MAX);
+}

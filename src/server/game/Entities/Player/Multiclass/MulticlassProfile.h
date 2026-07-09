@@ -377,6 +377,11 @@ public:
     [[nodiscard]] std::vector<Multiclass::LoadoutMeta> const& GetLoadouts() const { return _loadouts; }
     [[nodiscard]] uint32 GetActiveLoadoutId() const { return _activeLoadoutId; }
     void SetActiveLoadoutId(uint32 id) { _activeLoadoutId = id; }
+    // Permanent gold-bought loadout-slot ratchet (Phase 2). Effective loadout capacity = the
+    // Multiclass.Loadout.FreeSlots config baseline + this; unbounded (escalating cost is the limiter).
+    [[nodiscard]] uint32 GetPurchasedLoadoutSlots() const { return _purchasedLoadoutSlots; }
+    void SetPurchasedLoadoutSlots(uint32 n) { _purchasedLoadoutSlots = n; }
+    void AddPurchasedLoadoutSlots(uint32 n) { _purchasedLoadoutSlots += n; }
     void SetLoadouts(std::vector<Multiclass::LoadoutMeta> loadouts) { _loadouts = std::move(loadouts); SortLoadouts(); }
 
     [[nodiscard]] Multiclass::LoadoutMeta const* FindLoadout(uint32 id) const
@@ -487,6 +492,7 @@ private:
 
     std::vector<Multiclass::LoadoutMeta> _loadouts;   // loadout metadata (Phase 1); build content is in DB/live tables
     uint32 _activeLoadoutId = 0;                      // currently active loadout id (0 = none/legacy)
+    uint32 _purchasedLoadoutSlots = 0;                // permanent gold-bought loadout-slot ratchet (Phase 2)
 };
 
 #endif // ACORE_MULTICLASS_PROFILE_H

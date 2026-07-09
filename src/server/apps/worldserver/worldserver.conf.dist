@@ -2372,14 +2372,32 @@ Multiclass.DiegeticClassName = "adventurer"
 #
 #    Multiclass.Loadout.FreeSlots
 #        Description: Number of loadouts a character may keep for free. A loadout is a saved
-#                     snapshot of the whole multiclass build -- which classes fill which slots, each
-#                     active class's talent spend and glyphs, plus a name/description/icon -- swapped
+#                     snapshot of the whole multiclass build (which classes fill which slots, each
+#                     active class's talent spend and glyphs, plus a name/description/icon), swapped
 #                     out of combat at no cost. There is no in-game grant command yet: raise
 #                     this value to give every character more loadout slots. (Per-character
 #                     purchasable slots are a later phase.)
 #        Default:     2
 
 Multiclass.Loadout.FreeSlots = 2
+
+#
+#    Multiclass.Loadout.SlotCostBaseGold
+#        Description: Gold cost of the FIRST loadout slot bought beyond the free baseline. Additional
+#                     slots escalate by SlotCostStepGold each (a permanent per-character ratchet). This
+#                     is the loadouts gold sink; set it to a value that is a meaningful drain at scale.
+#        Default:     100
+
+Multiclass.Loadout.SlotCostBaseGold = 100
+
+#
+#    Multiclass.Loadout.SlotCostStepGold
+#        Description: Extra gold added to each successive purchased loadout slot. Cost of the Nth
+#                     bought slot (N starting at 0) = SlotCostBaseGold + N * SlotCostStepGold. Set to 0
+#                     for a flat per-slot cost; raise it for a steeper escalation curve.
+#        Default:     100
+
+Multiclass.Loadout.SlotCostStepGold = 100
 
 #
 ###################################################################################################

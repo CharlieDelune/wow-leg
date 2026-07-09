@@ -5051,11 +5051,12 @@ void Player::_LoadMulticlassProfile()
     // self-heals absent rows -- no data-migration script. Setting it here recomputes _maxActive, so the
     // Load() below trims any slots the (possibly lowered) effective cap can no longer hold, into the bench.
     if (QueryResult capResult = CharacterDatabase.Query(Acore::StringFormat(
-        "SELECT `unlockedSlots`, `activeLoadoutId` FROM `character_multiclass` WHERE `guid` = {}", low)))
+        "SELECT `unlockedSlots`, `activeLoadoutId`, `purchasedLoadoutSlots` FROM `character_multiclass` WHERE `guid` = {}", low)))
     {
         Field* capFields = capResult->Fetch();
         m_multiclassProfile.SetUnlockedSlots(capFields[0].Get<uint8>());
         m_multiclassProfile.SetActiveLoadoutId(capFields[1].Get<uint32>());
+        m_multiclassProfile.SetPurchasedLoadoutSlots(capFields[2].Get<uint32>());
     }
     else
     {
@@ -5149,10 +5150,10 @@ void Player::_SaveMulticlassProfile(CharacterDatabaseTransaction trans)
     if (!mc.GetOwnedClasses().empty())
     {
         trans->Append(Acore::StringFormat(
-            "INSERT INTO `character_multiclass` (`guid`, `unlockedSlots`, `activeLoadoutId`) VALUES ({}, {}, {})"
-            " ON DUPLICATE KEY UPDATE `unlockedSlots` = {}, `activeLoadoutId` = {}",
-            low, uint32(mc.GetUnlockedSlots()), mc.GetActiveLoadoutId(),
-            uint32(mc.GetUnlockedSlots()), mc.GetActiveLoadoutId()));
+            "INSERT INTO `character_multiclass` (`guid`, `unlockedSlots`, `activeLoadoutId`, `purchasedLoadoutSlots`) VALUES ({}, {}, {}, {})"
+            " ON DUPLICATE KEY UPDATE `unlockedSlots` = {}, `activeLoadoutId` = {}, `purchasedLoadoutSlots` = {}",
+            low, uint32(mc.GetUnlockedSlots()), mc.GetActiveLoadoutId(), mc.GetPurchasedLoadoutSlots(),
+            uint32(mc.GetUnlockedSlots()), mc.GetActiveLoadoutId(), mc.GetPurchasedLoadoutSlots()));
 
         // Loadout metadata (Phase 1). name/description are player text -> prepared statement (escaped). This
         // upserts the current list; loadout DELETE (on delete-op) removes dropped ones, so no stale rows.

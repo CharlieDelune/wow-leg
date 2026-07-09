@@ -45,7 +45,9 @@ public:
             { "rename",   HandleLoadoutRename,   SEC_GAMEMASTER, Console::No },
             { "setdesc",  HandleLoadoutSetDesc,  SEC_GAMEMASTER, Console::No },
             { "seticon",  HandleLoadoutSetIcon,  SEC_GAMEMASTER, Console::No },
-            { "delete",   HandleLoadoutDelete,   SEC_GAMEMASTER, Console::No }
+            { "delete",   HandleLoadoutDelete,   SEC_GAMEMASTER, Console::No },
+            { "buyslot",   HandleLoadoutBuySlot,   SEC_GAMEMASTER, Console::No },
+            { "grantslot", HandleLoadoutGrantSlot, SEC_GAMEMASTER, Console::No }
         };
 
         static ChatCommandTable mcTable =
@@ -411,9 +413,9 @@ public:
         }
 
         MulticlassProfile const& mc = player->GetMulticlassProfile();
-        uint32 const cap = sConfigMgr->GetOption<uint32>("Multiclass.Loadout.FreeSlots", 2);
-        handler->PSendSysMessage("Loadouts ({}/{} used), active id = {}:",
-            uint32(mc.GetLoadouts().size()), cap, mc.GetActiveLoadoutId());
+        handler->PSendSysMessage("Loadouts ({}/{} used), active id = {}, next slot costs {}g:",
+            uint32(mc.GetLoadouts().size()), player->GetLoadoutCapacity(), mc.GetActiveLoadoutId(),
+            player->NextLoadoutSlotCostCopper() / 10000u);
         for (Multiclass::LoadoutMeta const& l : mc.GetLoadouts())
         {
             std::string const shownName = l.name.empty() ? "(unnamed)" : l.name;
@@ -421,7 +423,7 @@ public:
             if (l.description.empty())
                 handler->PSendSysMessage("  [{}] {}{}", l.id, shownName, active);
             else
-                handler->PSendSysMessage("  [{}] {}{} -- {}", l.id, shownName, active, l.description);
+                handler->PSendSysMessage("  [{}] {}{}: {}", l.id, shownName, active, l.description);
         }
         return true;
     }
@@ -536,6 +538,48 @@ public:
             handler->PSendSysMessage("Deleted loadout {}.", loadoutId);
         else
             handler->SendErrorMessage("Can't delete loadout {} (last one, in combat, or unknown).", loadoutId);
+        return true;
+    }
+
+    static bool HandleLoadoutBuySlot(ChatHandler* handler)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+
+        uint32 cost = 0;
+        switch (player->BuyLoadoutSlot(cost))
+        {
+            case Player::BuyLoadoutSlotResult::Success:
+                handler->PSendSysMessage("Bought a loadout slot for {}g. Capacity is now {}.",
+                    cost / 10000u, player->GetLoadoutCapacity());
+                break;
+            case Player::BuyLoadoutSlotResult::NotEnoughGold:
+                handler->SendErrorMessage("Not enough gold. The next loadout slot costs {}g.",
+                    player->NextLoadoutSlotCostCopper() / 10000u);
+                break;
+            case Player::BuyLoadoutSlotResult::NotManaged:
+                handler->SendErrorMessage("Multiclass is disabled or you have no active class.");
+                break;
+        }
+        return true;
+    }
+
+    static bool HandleLoadoutGrantSlot(ChatHandler* handler, Optional<uint32> count)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+
+        if (!sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
+        {
+            handler->SendErrorMessage("Multiclass is disabled.");
+            return true;
+        }
+
+        uint32 const n = count && *count > 0 ? *count : 1;
+        player->GrantLoadoutSlots(n);
+        handler->PSendSysMessage("Granted {} loadout slot(s) (free). Capacity is now {}.", n, player->GetLoadoutCapacity());
         return true;
     }
 

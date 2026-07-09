@@ -15301,13 +15301,52 @@ void Player::ApplyLoadoutBuild(uint32 loadoutId)
 
 // ---- Loadout operations (Loadouts Phase 1) --------------------------------------------------------
 
+// Effective loadout capacity = the free config baseline + the per-character purchased ratchet (Phase 2).
+uint32 Player::GetLoadoutCapacity() const
+{
+    uint32 const freeSlots = sConfigMgr->GetOption<uint32>("Multiclass.Loadout.FreeSlots", 2);
+    return freeSlots + GetMulticlassProfile().GetPurchasedLoadoutSlots();
+}
+
+// Copper cost of the next purchasable slot; config base/step in gold, escalating with slots already bought.
+uint32 Player::NextLoadoutSlotCostCopper() const
+{
+    uint32 const base = sConfigMgr->GetOption<uint32>("Multiclass.Loadout.SlotCostBaseGold", 100) * 10000u;
+    uint32 const step = sConfigMgr->GetOption<uint32>("Multiclass.Loadout.SlotCostStepGold", 100) * 10000u;
+    return Multiclass::LoadoutSlotCostCopper(GetMulticlassProfile().GetPurchasedLoadoutSlots(), base, step);
+}
+
+// Charge the escalating gold cost and ratchet purchased slots +1. HasEnoughMoney gates first, so the cost
+// reaching ModifyMoney is always <= the player's (int32-bounded) coinage -- the negative cast is safe.
+Player::BuyLoadoutSlotResult Player::BuyLoadoutSlot(uint32& costCharged)
+{
+    if (!IsMulticlassManaged())
+        return BuyLoadoutSlotResult::NotManaged;
+
+    uint32 const cost = NextLoadoutSlotCostCopper();
+    if (!HasEnoughMoney(cost))
+        return BuyLoadoutSlotResult::NotEnoughGold;
+
+    ModifyMoney(-int32(cost));
+    m_multiclassProfile.AddPurchasedLoadoutSlots(1);
+    SaveMulticlassProfile();
+    costCharged = cost;
+    return BuyLoadoutSlotResult::Success;
+}
+
+// GM free grant (no gold): raise the ratchet by n and persist.
+void Player::GrantLoadoutSlots(uint32 n)
+{
+    m_multiclassProfile.AddPurchasedLoadoutSlots(n);
+    SaveMulticlassProfile();
+}
+
 uint32 Player::CreateLoadout(std::string const& name, bool fromCurrent)
 {
     MulticlassProfile& mc = m_multiclassProfile;
     if (!IsMulticlassManaged())
         return 0;
-    uint32 const capacity = sConfigMgr->GetOption<uint32>("Multiclass.Loadout.FreeSlots", 2);
-    if (!Multiclass::CanCreateLoadout(mc.GetLoadouts().size(), capacity))
+    if (!Multiclass::CanCreateLoadout(mc.GetLoadouts().size(), GetLoadoutCapacity()))
         return 0;
 
     uint32 const newId = Multiclass::NextLoadoutId(mc.GetLoadouts());
