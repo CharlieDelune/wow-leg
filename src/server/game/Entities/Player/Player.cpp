@@ -15392,6 +15392,49 @@ uint32 Player::CreateLoadout(std::string const& name, bool fromCurrent)
     return newId;
 }
 
+// Fork any loadout (by id) into a new slot without switching to it. If the source is the active loadout its
+// build is the live tables (snapshot them); otherwise copy the source's stored content rows. The live build
+// and active pointer are untouched. Returns the new id, or 0 if the cap is full, the source is unknown, or
+// the character is not managed.
+uint32 Player::DuplicateLoadout(uint32 sourceId, std::string const& name)
+{
+    MulticlassProfile& mc = m_multiclassProfile;
+    if (!IsMulticlassManaged())
+        return 0;
+    if (!Multiclass::CanCreateLoadout(mc.GetLoadouts().size(), GetLoadoutCapacity()))
+        return 0;
+    Multiclass::LoadoutMeta const* source = mc.FindLoadout(sourceId);
+    if (!source)
+        return 0;
+
+    uint32 const newId = Multiclass::NextLoadoutId(mc.GetLoadouts());
+    uint32 const guid = GetGUID().GetCounter();
+    std::string const sourceIcon = source->icon;   // copy before AddLoadout can reallocate _loadouts
+
+    CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
+    if (sourceId == mc.GetActiveLoadoutId())
+    {
+        SnapshotLiveBuildToLoadout(newId, trans);   // active build lives in the live tables
+    }
+    else
+    {
+        // Inactive source: its stored rows are canonical. newId is freshly allocated, but DELETE first to stay
+        // idempotent, then copy each content table across, rewriting loadoutId.
+        trans->Append(Acore::StringFormat("DELETE FROM `character_multiclass_loadout_slot` WHERE `guid` = {} AND `loadoutId` = {}", guid, newId));
+        trans->Append(Acore::StringFormat("DELETE FROM `character_multiclass_loadout_talent` WHERE `guid` = {} AND `loadoutId` = {}", guid, newId));
+        trans->Append(Acore::StringFormat("DELETE FROM `character_multiclass_loadout_glyph` WHERE `guid` = {} AND `loadoutId` = {}", guid, newId));
+        trans->Append(Acore::StringFormat("INSERT INTO `character_multiclass_loadout_slot` (`guid`, `loadoutId`, `slot`, `classId`) SELECT `guid`, {}, `slot`, `classId` FROM `character_multiclass_loadout_slot` WHERE `guid` = {} AND `loadoutId` = {}", newId, guid, sourceId));
+        trans->Append(Acore::StringFormat("INSERT INTO `character_multiclass_loadout_talent` (`guid`, `loadoutId`, `spell`) SELECT `guid`, {}, `spell` FROM `character_multiclass_loadout_talent` WHERE `guid` = {} AND `loadoutId` = {}", newId, guid, sourceId));
+        trans->Append(Acore::StringFormat("INSERT INTO `character_multiclass_loadout_glyph` (`guid`, `loadoutId`, `classId`, `glyph1`, `glyph2`, `glyph3`, `glyph4`, `glyph5`, `glyph6`) SELECT `guid`, {}, `classId`, `glyph1`, `glyph2`, `glyph3`, `glyph4`, `glyph5`, `glyph6` FROM `character_multiclass_loadout_glyph` WHERE `guid` = {} AND `loadoutId` = {}", newId, guid, sourceId));
+    }
+    CharacterDatabase.CommitTransaction(trans);
+
+    mc.AddLoadout({ newId, name, "", sourceIcon, uint32(mc.GetLoadouts().size()) });   // inherit the source icon
+    SaveMulticlassProfile();
+    Multiclass::SendClientState(this);
+    return newId;
+}
+
 bool Player::SwitchLoadout(uint32 loadoutId)
 {
     MulticlassProfile& mc = m_multiclassProfile;
@@ -15469,6 +15512,60 @@ bool Player::DeleteLoadout(uint32 loadoutId)
     SaveMulticlassProfile();
     Multiclass::SendClientState(this);
     return true;
+}
+
+// Rearrange the saved loadout order (sortOrder). Display floats the active loadout to the top; this drives the
+// slot everything returns to. The client sends the full desired id sequence; position becomes the new sortOrder.
+bool Player::ReorderLoadouts(std::vector<uint32> const& idsInOrder)
+{
+    if (!IsMulticlassManaged())
+        return false;
+    if (!m_multiclassProfile.ApplyLoadoutOrder(idsInOrder))
+        return false;
+    SaveMulticlassProfile();
+    Multiclass::SendClientState(this);
+    return true;
+}
+
+// Opaque client UI state for the loadout quick-switch bar (shown/columns/scale/position). The server never
+// parses it, so it just persists the string; sanitise here (the sole ingest point) to a safe charset + length
+// so embedding it in the raw character_multiclass upsert can never break the query. No state push: the client
+// already holds the value it just sent; it is echoed back only on the next login via SendClientState.
+void Player::SetLoadoutBarPrefs(std::string const& prefs)
+{
+    if (!IsMulticlassManaged())
+        return;
+
+    std::string clean;
+    clean.reserve(std::min<std::size_t>(prefs.size(), 63));
+    for (char c : prefs)
+    {
+        if (clean.size() >= 63)
+            break;
+        // format is "shown|cols|scale|point|x|y": letters, digits, and . | space + - are all we ever send.
+        bool const allowed = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+            || c == '.' || c == '|' || c == ' ' || c == '+' || c == '-';
+        if (allowed)
+            clean.push_back(c);
+    }
+
+    m_multiclassProfile.SetLoadoutBarPrefs(clean);
+    SaveMulticlassProfile();
+}
+
+// The active loadout's build is the live tables, so its class set is the live active set; an inactive loadout's
+// set is read from its stored arrangement rows. Slot order preserved so the row emblems match the panel.
+std::vector<uint8> Player::GetLoadoutClasses(uint32 loadoutId) const
+{
+    MulticlassProfile const& mc = GetMulticlassProfile();
+    if (loadoutId == mc.GetActiveLoadoutId())
+        return mc.GetActiveClasses();
+
+    std::vector<uint8> out;
+    uint32 const guid = GetGUID().GetCounter();
+    if (QueryResult r = CharacterDatabase.Query(Acore::StringFormat("SELECT `classId` FROM `character_multiclass_loadout_slot` WHERE `guid` = {} AND `loadoutId` = {} ORDER BY `slot`", guid, loadoutId)))
+        do { out.push_back(r->Fetch()[0].Get<uint8>()); } while (r->NextRow());
+    return out;
 }
 
 void Player::LearnPetTalent(ObjectGuid petGuid, uint32 talentId, uint32 talentRank)

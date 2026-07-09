@@ -757,6 +757,27 @@ namespace Multiclass
                 ChatHandler::BuildChatPacket(gData, CHAT_MSG_WHISPER, LANG_ADDON, player, player, gPayload);
                 player->GetSession()->SendPacket(&gData);
             }
+
+            // Loadouts (Phase 3): the slot-economy header first (the client resets its loadout list on it),
+            // then per loadout a "loadout" line, its class set, and its description (each carries spaces so they
+            // ride separate lines).
+            auto sendLine = [player](std::string const& body)
+            {
+                std::string payload(kClientMsgTag);
+                payload += body;
+                WorldPacket pkt;
+                ChatHandler::BuildChatPacket(pkt, CHAT_MSG_WHISPER, LANG_ADDON, player, player, payload);
+                player->GetSession()->SendPacket(&pkt);
+            };
+            sendLine(SerializeLoadoutCapacity(player->GetLoadoutCapacity(), mc.GetPurchasedLoadoutSlots(),
+                player->NextLoadoutSlotCostCopper()));
+            for (auto const& l : mc.GetLoadouts())
+            {
+                sendLine(SerializeLoadout(l, l.id == mc.GetActiveLoadoutId()));
+                sendLine(SerializeLoadoutClasses(l.id, player->GetLoadoutClasses(l.id)));
+                sendLine(SerializeLoadoutDescription(l));
+            }
+            sendLine(SerializeBarPrefs(mc.GetLoadoutBarPrefs()));   // restores the quick-switch bar's saved settings
         }
     }
 

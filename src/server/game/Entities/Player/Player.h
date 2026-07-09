@@ -1797,11 +1797,17 @@ public:
     void ApplyLoadoutBuild(uint32 loadoutId);   // rows -> live (arrangement + talents + glyphs)
     // Loadout operations (Loadouts Phase 1): create / switch (out of combat, free) / rename / delete.
     uint32 CreateLoadout(std::string const& name, bool fromCurrent);   // 0 if capacity full / not managed
+    uint32 DuplicateLoadout(uint32 sourceId, std::string const& name); // fork any loadout, no switch; 0 on fail
     bool SwitchLoadout(uint32 loadoutId);                              // false if in combat / unknown
     bool RenameLoadout(uint32 loadoutId, std::string const& name);
     bool SetLoadoutDescription(uint32 loadoutId, std::string const& text);
     bool SetLoadoutIcon(uint32 loadoutId, std::string const& texture);
     bool DeleteLoadout(uint32 loadoutId);
+    bool ReorderLoadouts(std::vector<uint32> const& idsInOrder);       // reassign saved sortOrder; false if not managed
+    void SetLoadoutBarPrefs(std::string const& prefs);                 // opaque client bar UI state (sanitised, persisted)
+    // Loadout's class set in slot order (live active set for the active loadout, stored rows otherwise) so each
+    // panel row can show its class emblems.
+    [[nodiscard]] std::vector<uint8> GetLoadoutClasses(uint32 loadoutId) const;
     // Loadout slot economy (Loadouts Phase 2): capacity = free config baseline + purchased ratchet.
     enum class BuyLoadoutSlotResult { Success, NotManaged, NotEnoughGold };
     [[nodiscard]] uint32 GetLoadoutCapacity() const;          // free (config) + purchased ratchet

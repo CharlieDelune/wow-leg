@@ -1341,4 +1341,7 @@
 	<Binding name="TOGGLEMULTICLASS" header="MULTICLASS">
 		ToggleMulticlassFrame();
 	</Binding>
+	<Binding name="TOGGLEMULTICLASSBAR">
+		if ( MulticlassLoadoutBar ) then MulticlassLoadoutBar:Toggle(); end
+	</Binding>
 </Bindings>

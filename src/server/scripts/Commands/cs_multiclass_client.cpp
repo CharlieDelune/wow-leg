@@ -164,6 +164,94 @@ public:
                 Multiclass::SendClientState(player);
                 break;
             }
+            // Loadouts (Phase 3). Create/Duplicate/Switch/Delete push fresh state internally on success, so
+            // those cases only add an error path; Rename/Desc/Icon/Buy do not, so they push here.
+            case Multiclass::ClientVerb::SwitchLoadout:
+                if (!enabled)
+                    break;
+                if (!player->SwitchLoadout(req.loadoutId))
+                    SendError(player, player->IsInCombat() ? "Can't switch loadouts in combat." : "No such loadout.");
+                break;
+            case Multiclass::ClientVerb::NewLoadout:
+            {
+                if (!enabled)
+                    break;
+                uint32 const newId = player->CreateLoadout(req.loadoutText, /*fromCurrent*/ false);
+                if (newId == 0)
+                    SendError(player, "Can't create a loadout (no free slots).");
+                else
+                    SendLine(player, "loadoutnew " + std::to_string(newId));   // let the editor apply icon/desc
+                break;
+            }
+            case Multiclass::ClientVerb::DupLoadout:
+            {
+                if (!enabled)
+                    break;
+                uint32 const newId = player->DuplicateLoadout(req.loadoutId, req.loadoutText);
+                if (newId == 0)
+                    SendError(player, "Can't duplicate (no free slots, or unknown loadout).");
+                else
+                    SendLine(player, "loadoutnew " + std::to_string(newId));
+                break;
+            }
+            case Multiclass::ClientVerb::RenameLoadout:
+                if (!enabled)
+                    break;
+                if (player->RenameLoadout(req.loadoutId, req.loadoutText))
+                    Multiclass::SendClientState(player);
+                else
+                    SendError(player, "No such loadout.");
+                break;
+            case Multiclass::ClientVerb::DescLoadout:
+                if (!enabled)
+                    break;
+                if (player->SetLoadoutDescription(req.loadoutId, req.loadoutText))
+                    Multiclass::SendClientState(player);
+                else
+                    SendError(player, "No such loadout.");
+                break;
+            case Multiclass::ClientVerb::IconLoadout:
+                if (!enabled)
+                    break;
+                if (player->SetLoadoutIcon(req.loadoutId, req.loadoutText))
+                    Multiclass::SendClientState(player);
+                else
+                    SendError(player, "No such loadout.");
+                break;
+            case Multiclass::ClientVerb::DelLoadout:
+                if (!enabled)
+                    break;
+                if (!player->DeleteLoadout(req.loadoutId))
+                    SendError(player, "Can't delete (last loadout, in combat, or unknown).");
+                break;
+            case Multiclass::ClientVerb::OrderLoadouts:
+                if (!enabled)
+                    break;
+                player->ReorderLoadouts(req.loadoutOrder);   // pushes fresh state internally on success
+                break;
+            case Multiclass::ClientVerb::SetBarPrefs:
+                if (!enabled)
+                    break;
+                player->SetLoadoutBarPrefs(req.loadoutText);   // opaque UI state; persisted, no echo needed
+                break;
+            case Multiclass::ClientVerb::BuyLoadoutSlot:
+            {
+                if (!enabled)
+                    break;
+                uint32 cost = 0;
+                switch (player->BuyLoadoutSlot(cost))
+                {
+                    case Player::BuyLoadoutSlotResult::Success:
+                        Multiclass::SendClientState(player);
+                        break;
+                    case Player::BuyLoadoutSlotResult::NotEnoughGold:
+                        SendError(player, "Not enough gold for the next loadout slot.");
+                        break;
+                    case Player::BuyLoadoutSlotResult::NotManaged:
+                        break;
+                }
+                break;
+            }
             case Multiclass::ClientVerb::Invalid:
             default:
                 break;
@@ -180,6 +268,17 @@ private:
             return;
         std::string payload = std::string(Multiclass::kClientMsgTag) + "err ";
         payload += text;
+        WorldPacket data;
+        ChatHandler::BuildChatPacket(data, CHAT_MSG_WHISPER, LANG_ADDON, player, player, payload);
+        player->GetSession()->SendPacket(&data);
+    }
+
+    // Push a single MCLS line to the client (used for the loadoutnew id echo after create/duplicate).
+    static void SendLine(Player* player, std::string const& body)
+    {
+        if (!player->GetSession())
+            return;
+        std::string payload = std::string(Multiclass::kClientMsgTag) + body;
         WorldPacket data;
         ChatHandler::BuildChatPacket(data, CHAT_MSG_WHISPER, LANG_ADDON, player, player, payload);
         player->GetSession()->SendPacket(&data);

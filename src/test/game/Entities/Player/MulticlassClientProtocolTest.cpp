@@ -126,3 +126,103 @@ TEST(MulticlassClientProtocolTest, WhoClassMask_matchesWhoBitConvention)
     EXPECT_EQ(WhoClassMask({1, 8, 11}), (1u << 1) | (1u << 8) | (1u << 11));
     EXPECT_EQ(WhoClassMask({}), 0u);
 }
+
+TEST(MulticlassClientProtocolTest, ParseLoadoutNumericVerbs)
+{
+    EXPECT_EQ(ParseClientRequest("switchloadout 3").verb, ClientVerb::SwitchLoadout);
+    EXPECT_EQ(ParseClientRequest("switchloadout 3").loadoutId, 3u);
+    EXPECT_EQ(ParseClientRequest("delloadout 7").verb, ClientVerb::DelLoadout);
+    EXPECT_EQ(ParseClientRequest("delloadout 7").loadoutId, 7u);
+    EXPECT_EQ(ParseClientRequest("buyloadoutslot").verb, ClientVerb::BuyLoadoutSlot);
+}
+
+TEST(MulticlassClientProtocolTest, ParseLoadoutNamesRestOfLine)
+{
+    ClientRequest n = ParseClientRequest("newloadout Raid Fire");
+    EXPECT_EQ(n.verb, ClientVerb::NewLoadout);
+    EXPECT_EQ(n.loadoutText, "Raid Fire");
+
+    ClientRequest d = ParseClientRequest("duploadout 5 Frost Clone");
+    EXPECT_EQ(d.verb, ClientVerb::DupLoadout);
+    EXPECT_EQ(d.loadoutId, 5u);
+    EXPECT_EQ(d.loadoutText, "Frost Clone");
+
+    ClientRequest r = ParseClientRequest("renameloadout 2 New Name");
+    EXPECT_EQ(r.verb, ClientVerb::RenameLoadout);
+    EXPECT_EQ(r.loadoutId, 2u);
+    EXPECT_EQ(r.loadoutText, "New Name");
+}
+
+TEST(MulticlassClientProtocolTest, ParseLoadoutDescAndIcon)
+{
+    ClientRequest d = ParseClientRequest("descloadout 2 single target, no aoe");
+    EXPECT_EQ(d.verb, ClientVerb::DescLoadout);
+    EXPECT_EQ(d.loadoutId, 2u);
+    EXPECT_EQ(d.loadoutText, "single target, no aoe");
+
+    ClientRequest empty = ParseClientRequest("descloadout 2");   // clearing the description is allowed
+    EXPECT_EQ(empty.verb, ClientVerb::DescLoadout);
+    EXPECT_EQ(empty.loadoutText, "");
+
+    ClientRequest i = ParseClientRequest("iconloadout 2 Interface\\Icons\\Spell_Fire_Fireball");
+    EXPECT_EQ(i.verb, ClientVerb::IconLoadout);
+    EXPECT_EQ(i.loadoutId, 2u);
+    EXPECT_EQ(i.loadoutText, "Interface\\Icons\\Spell_Fire_Fireball");
+}
+
+TEST(MulticlassClientProtocolTest, ParseLoadoutRejectsBadInput)
+{
+    EXPECT_EQ(ParseClientRequest("newloadout").verb, ClientVerb::Invalid);        // empty name
+    EXPECT_EQ(ParseClientRequest("duploadout 5").verb, ClientVerb::Invalid);      // id but no name
+    EXPECT_EQ(ParseClientRequest("switchloadout").verb, ClientVerb::Invalid);     // missing id
+    EXPECT_EQ(ParseClientRequest("switchloadout x").verb, ClientVerb::Invalid);   // non-numeric id
+}
+
+TEST(MulticlassClientProtocolTest, ParseOrderLoadouts)
+{
+    ClientRequest r = ParseClientRequest("orderloadouts 3 1 2");
+    EXPECT_EQ(r.verb, ClientVerb::OrderLoadouts);
+    ASSERT_EQ(r.loadoutOrder.size(), 3u);
+    EXPECT_EQ(r.loadoutOrder[0], 3u);
+    EXPECT_EQ(r.loadoutOrder[1], 1u);
+    EXPECT_EQ(r.loadoutOrder[2], 2u);
+    EXPECT_EQ(ParseClientRequest("orderloadouts 5").loadoutOrder.size(), 1u);   // single id is valid
+    EXPECT_EQ(ParseClientRequest("orderloadouts").verb, ClientVerb::Invalid);   // needs >= 1 id
+    EXPECT_EQ(ParseClientRequest("orderloadouts 1 x 2").verb, ClientVerb::Invalid);   // non-numeric id
+}
+
+TEST(MulticlassClientProtocolTest, SerializeLoadoutClasses)
+{
+    EXPECT_EQ(SerializeLoadoutClasses(3, {1, 8, 11}), "loadoutclasses 3 1 8 11");
+    EXPECT_EQ(SerializeLoadoutClasses(4, {}), "loadoutclasses 4");   // empty set = just the id
+}
+
+TEST(MulticlassClientProtocolTest, SerializeLoadoutLines)
+{
+    EXPECT_EQ(SerializeLoadout(LoadoutMeta{3, "Raid Fire", "single target", "IconX", 0}, true),
+        "loadout 3 0 1 IconX Raid Fire");
+    EXPECT_EQ(SerializeLoadout(LoadoutMeta{4, "Blank", "", "", 2}, false),
+        "loadout 4 2 0 - Blank");                                  // empty icon becomes "-"
+    EXPECT_EQ(SerializeLoadoutDescription(LoadoutMeta{3, "Raid Fire", "single target", "IconX", 0}),
+        "loadoutdesc 3 single target");
+    EXPECT_EQ(SerializeLoadoutDescription(LoadoutMeta{4, "Blank", "", "", 2}),
+        "loadoutdesc 4 ");                                         // empty description keeps the trailing space
+    EXPECT_EQ(SerializeLoadoutCapacity(4, 2, 4000000), "loadoutcap 4 2 4000000");
+}
+
+TEST(MulticlassClientProtocolTest, ParseSetBarPrefs)
+{
+    ClientRequest r = ParseClientRequest("setbarprefs 1|6|1.00|CENTER|-40|120");
+    EXPECT_EQ(r.verb, ClientVerb::SetBarPrefs);
+    EXPECT_EQ(r.loadoutText, "1|6|1.00|CENTER|-40|120");
+
+    ClientRequest empty = ParseClientRequest("setbarprefs");   // no blob = clear the saved settings
+    EXPECT_EQ(empty.verb, ClientVerb::SetBarPrefs);
+    EXPECT_EQ(empty.loadoutText, "");
+}
+
+TEST(MulticlassClientProtocolTest, SerializeBarPrefs)
+{
+    EXPECT_EQ(SerializeBarPrefs("1|6|1.00|CENTER|-40|120"), "barprefs 1|6|1.00|CENTER|-40|120");
+    EXPECT_EQ(SerializeBarPrefs(""), "barprefs ");   // empty state still round-trips
+}

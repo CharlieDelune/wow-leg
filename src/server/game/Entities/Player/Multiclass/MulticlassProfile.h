@@ -382,6 +382,11 @@ public:
     [[nodiscard]] uint32 GetPurchasedLoadoutSlots() const { return _purchasedLoadoutSlots; }
     void SetPurchasedLoadoutSlots(uint32 n) { _purchasedLoadoutSlots = n; }
     void AddPurchasedLoadoutSlots(uint32 n) { _purchasedLoadoutSlots += n; }
+    // Opaque per-character client UI state for the Loadouts quick-switch bar (shown/columns/scale/position).
+    // The server never interprets it; it round-trips the string so the settings follow the character. The
+    // Player-level setter sanitises before this is stored, so it is always safe to embed in a raw query.
+    [[nodiscard]] std::string const& GetLoadoutBarPrefs() const { return _loadoutBarPrefs; }
+    void SetLoadoutBarPrefs(std::string prefs) { _loadoutBarPrefs = std::move(prefs); }
     void SetLoadouts(std::vector<Multiclass::LoadoutMeta> loadouts) { _loadouts = std::move(loadouts); SortLoadouts(); }
 
     [[nodiscard]] Multiclass::LoadoutMeta const* FindLoadout(uint32 id) const
@@ -432,6 +437,21 @@ public:
             return true;
         }
         return false;
+    }
+
+    // Reassign sortOrder to match the given id sequence (position = new sortOrder). Ids not present are
+    // skipped; loadouts missing from `ids` keep their old sortOrder. Returns true if anything matched.
+    bool ApplyLoadoutOrder(std::vector<uint32> const& ids)
+    {
+        bool any = false;
+        for (std::size_t i = 0; i < ids.size(); ++i)
+            if (Multiclass::LoadoutMeta* l = FindLoadoutMutable(ids[i]))
+            {
+                l->sortOrder = uint32(i);
+                any = true;
+            }
+        SortLoadouts();
+        return any;
     }
 
 private:
@@ -493,6 +513,7 @@ private:
     std::vector<Multiclass::LoadoutMeta> _loadouts;   // loadout metadata (Phase 1); build content is in DB/live tables
     uint32 _activeLoadoutId = 0;                      // currently active loadout id (0 = none/legacy)
     uint32 _purchasedLoadoutSlots = 0;                // permanent gold-bought loadout-slot ratchet (Phase 2)
+    std::string _loadoutBarPrefs;                     // opaque client UI state for the loadout quick-switch bar
 };
 
 #endif // ACORE_MULTICLASS_PROFILE_H

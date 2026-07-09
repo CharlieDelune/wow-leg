@@ -149,6 +149,8 @@ MulticlassFrame.xml
 MulticlassTalents.lua
 MulticlassGlyphIcons.lua
 MulticlassGlyphs.lua
+MulticlassLoadouts.lua
+MulticlassLoadoutBar.lua
 MulticlassIdentityHooks.lua
 MulticlassProjectionDisplay.lua
 MulticlassDiegetic.lua

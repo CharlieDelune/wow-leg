@@ -4,6 +4,7 @@ local PREFIX = "MCLS";
 -- Key Bindings UI strings for the (unbound-by-default) binding declared in Bindings.xml.
 BINDING_HEADER_MULTICLASS = "Multiclass";
 BINDING_NAME_TOGGLEMULTICLASS = "Toggle class panel";
+BINDING_NAME_TOGGLEMULTICLASSBAR = "Toggle loadout quick-switch bar";
 
 UIPanelWindows["MulticlassFrame"] = { area = "left", pushable = 0, whileDead = 1 };
 
@@ -19,8 +20,8 @@ end
 function MulticlassUI:SelectTab(id)
 	if ( not TABS[id] ) then return end
 	self.activeTab = id;
-	MulticlassFrame:SetWidth((id == "talents") and 960 or (id == "glyphs") and 420 or 414);
-	MulticlassFrame:SetHeight((id == "talents") and 620 or (id == "glyphs") and 530 or 300);
+	MulticlassFrame:SetWidth((id == "talents") and 960 or (id == "glyphs") and 420 or (id == "loadouts") and 462 or 414);
+	MulticlassFrame:SetHeight((id == "talents") and 620 or (id == "glyphs") and 530 or (id == "loadouts") and 720 or 300);
 	if ( MulticlassFrame:IsShown() ) then UpdateUIPanelPositions(MulticlassFrame) end
 	for key, t in pairs(TABS) do
 		if ( key == id ) then t.frame:Show() else t.frame:Hide() end
@@ -43,7 +44,7 @@ function MulticlassUI:InitTabs()
 	MulticlassUI:RegisterTab("classes", MulticlassClassesTab, function() MulticlassUI:Render() end);
 	MulticlassUI:RegisterTab("talents", MulticlassTalentsTab, function() MulticlassUI:RenderTalents() end);
 	MulticlassUI:RegisterTab("glyphs", MulticlassGlyphsTab, function() MulticlassUI:RenderGlyphs() end);
-	MulticlassUI:RegisterTab("loadouts", MulticlassLoadoutsTab, nil);
+	MulticlassUI:RegisterTab("loadouts", MulticlassLoadoutsTab, function() MulticlassUI:RenderLoadouts() end);
 end
 
 local function Send(payload)
@@ -88,6 +89,8 @@ function MulticlassUI:OnFrameLoad(frame)
 	frame:RegisterEvent("CHAT_MSG_ADDON");
 	frame:RegisterEvent("PLAYER_ENTERING_WORLD");
 	frame:RegisterEvent("UNIT_PORTRAIT_UPDATE");
+	frame:RegisterEvent("PLAYER_REGEN_ENABLED");
+	frame:RegisterEvent("PLAYER_REGEN_DISABLED");
 	self:InitTabs();
 end
 
@@ -95,6 +98,11 @@ function MulticlassUI:OnFrameEvent(event, arg1, arg2)
 	if ( event == "PLAYER_ENTERING_WORLD" ) then
 		Send("hello");                 -- request the authoritative snapshot on login
 		self:UpdatePortrait();
+	elseif ( event == "PLAYER_REGEN_ENABLED" or event == "PLAYER_REGEN_DISABLED" ) then
+		if ( MulticlassFrame:IsShown() and self.activeTab == "loadouts" ) then
+			self:RenderLoadouts();     -- combat locks/unlocks the icon-switch and delete-active
+		end
+		if ( MulticlassLoadoutBar ) then MulticlassLoadoutBar:Render() end   -- desaturate/relock the quick-switch bar
 	elseif ( event == "UNIT_PORTRAIT_UPDATE" ) then
 		if ( arg1 == "player" ) then
 			self:UpdatePortrait();
@@ -122,6 +130,18 @@ function MulticlassUI:OnFrameEvent(event, arg1, arg2)
 			self:OnTalentsMessage(message);
 		elseif ( verb == "glyphs" ) then
 			self:OnGlyphsMessage(message);
+		elseif ( verb == "loadoutcap" ) then
+			self:OnLoadoutCapMessage(message);
+		elseif ( verb == "loadout" ) then
+			self:OnLoadoutMessage(message);
+		elseif ( verb == "loadoutclasses" ) then
+			self:OnLoadoutClassesMessage(message);
+		elseif ( verb == "loadoutdesc" ) then
+			self:OnLoadoutDescMessage(message);
+		elseif ( verb == "loadoutnew" ) then
+			self:OnLoadoutNewMessage(message);
+		elseif ( verb == "barprefs" ) then
+			MulticlassLoadoutBar:ApplyServerPrefs(message);   -- last line of a loadout state push; full list is populated
 		end
 	end
 end

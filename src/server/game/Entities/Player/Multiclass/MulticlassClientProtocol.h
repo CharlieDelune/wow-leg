@@ -31,7 +31,8 @@ namespace Multiclass
     // On-wire body prefix shared by every MCLS addon-channel message: "MCLS\tpayload".
     inline constexpr std::string_view kClientMsgTag = "MCLS\t";
 
-    enum class ClientVerb : uint8 { Invalid, Hello, SetOrder, Whois, SpendTalent, ResetTalents, SocketGlyph, RemoveGlyph, RemoveTalent };
+    enum class ClientVerb : uint8 { Invalid, Hello, SetOrder, Whois, SpendTalent, ResetTalents, SocketGlyph, RemoveGlyph, RemoveTalent,
+        SwitchLoadout, NewLoadout, DupLoadout, RenameLoadout, DescLoadout, IconLoadout, DelLoadout, BuyLoadoutSlot, OrderLoadouts, SetBarPrefs };
 
     struct ClientRequest
     {
@@ -44,6 +45,9 @@ namespace Multiclass
         uint8 glyphClass = 0;              // SocketGlyph / RemoveGlyph: the target active class (ring)
         uint8 glyphSlot = 0;               // SocketGlyph / RemoveGlyph: glyph slot 0..5
         uint32 glyphItemId = 0;            // SocketGlyph: item entry of the glyph being socketed
+        uint32 loadoutId = 0;              // loadout verbs: target loadout id
+        std::string loadoutText;           // loadout verbs: name / description / icon-texture (verb-specific)
+        std::vector<uint32> loadoutOrder;  // OrderLoadouts: loadout ids in the desired sort sequence
     };
 
     enum class DenyReason : uint8
@@ -73,6 +77,17 @@ namespace Multiclass
             return false;
         out = value;
         return true;
+    }
+
+    // Everything in `payload` after token `lastTok` (which must be a view INTO payload), with leading spaces
+    // trimmed. Used for loadout verbs whose trailing name/description is free text and may contain spaces.
+    inline std::string RestAfter(std::string_view payload, std::string_view lastTok)
+    {
+        char const* p = lastTok.data() + lastTok.size();
+        char const* const end = payload.data() + payload.size();
+        while (p < end && *p == ' ')
+            ++p;
+        return std::string(p, static_cast<std::size_t>(end - p));
     }
 
     // payload (prefix already stripped): "hello" | "setorder <classId> [<classId> ...]"
@@ -171,6 +186,65 @@ namespace Multiclass
                 req.glyphClass = c;
                 req.glyphSlot = s;
             }
+        }
+        else if (tok[0] == "switchloadout" && tok.size() == 2)
+        {
+            uint32 id = 0;
+            if (ParseU32(tok[1], id)) { req.verb = ClientVerb::SwitchLoadout; req.loadoutId = id; }
+        }
+        else if (tok[0] == "delloadout" && tok.size() == 2)
+        {
+            uint32 id = 0;
+            if (ParseU32(tok[1], id)) { req.verb = ClientVerb::DelLoadout; req.loadoutId = id; }
+        }
+        else if (tok[0] == "buyloadoutslot" && tok.size() == 1)
+        {
+            req.verb = ClientVerb::BuyLoadoutSlot;
+        }
+        else if (tok[0] == "newloadout" && tok.size() >= 2)
+        {
+            std::string name = RestAfter(payload, tok[0]);
+            if (!name.empty()) { req.verb = ClientVerb::NewLoadout; req.loadoutText = std::move(name); }
+        }
+        else if (tok[0] == "duploadout" && tok.size() >= 3)
+        {
+            uint32 id = 0;
+            std::string name = RestAfter(payload, tok[1]);
+            if (ParseU32(tok[1], id) && !name.empty()) { req.verb = ClientVerb::DupLoadout; req.loadoutId = id; req.loadoutText = std::move(name); }
+        }
+        else if (tok[0] == "renameloadout" && tok.size() >= 3)
+        {
+            uint32 id = 0;
+            std::string name = RestAfter(payload, tok[1]);
+            if (ParseU32(tok[1], id) && !name.empty()) { req.verb = ClientVerb::RenameLoadout; req.loadoutId = id; req.loadoutText = std::move(name); }
+        }
+        else if (tok[0] == "descloadout" && tok.size() >= 2)
+        {
+            uint32 id = 0;
+            if (ParseU32(tok[1], id)) { req.verb = ClientVerb::DescLoadout; req.loadoutId = id; req.loadoutText = RestAfter(payload, tok[1]); }   // text may be empty (clears)
+        }
+        else if (tok[0] == "iconloadout" && tok.size() == 3)
+        {
+            uint32 id = 0;
+            if (ParseU32(tok[1], id)) { req.verb = ClientVerb::IconLoadout; req.loadoutId = id; req.loadoutText = std::string(tok[2]); }
+        }
+        else if (tok[0] == "orderloadouts" && tok.size() >= 2)
+        {
+            std::vector<uint32> ids;
+            bool ok = true;
+            for (std::size_t i = 1; i < tok.size(); ++i)
+            {
+                uint32 v = 0;
+                if (!ParseU32(tok[i], v)) { ok = false; break; }
+                ids.push_back(v);
+            }
+            if (ok) { req.verb = ClientVerb::OrderLoadouts; req.loadoutOrder = std::move(ids); }
+        }
+        else if (tok[0] == "setbarprefs")
+        {
+            // Opaque client UI-state blob for the loadout quick-switch bar; rest of line (may be empty = clear).
+            req.verb = ClientVerb::SetBarPrefs;
+            req.loadoutText = (tok.size() >= 2) ? RestAfter(payload, tok[0]) : std::string();
         }
         return req;
     }
@@ -289,6 +363,66 @@ namespace Multiclass
             out += std::to_string(slots[i].second);
         }
         return out;
+    }
+
+    // "loadoutcap <capacity> <purchased> <nextCostCopper>" — the loadout slot economy header. The client
+    // treats this as the start of a fresh loadout batch: it resets its list here, then the per-loadout lines
+    // that follow repopulate it (so a deleted loadout drops out cleanly).
+    inline std::string SerializeLoadoutCapacity(uint32 capacity, uint32 purchased, uint32 nextCostCopper)
+    {
+        std::string out = "loadoutcap ";
+        out += std::to_string(capacity);
+        out += ' ';
+        out += std::to_string(purchased);
+        out += ' ';
+        out += std::to_string(nextCostCopper);
+        return out;
+    }
+
+    // "loadout <id> <sortOrder> <active 0|1> <icon> <name>" — one message per loadout. id/sortOrder/active/icon
+    // are single tokens (icon is a texture path with no spaces; "-" when unset so the name token stays fixed);
+    // name is the rest of the line and may contain spaces. The paired description rides its own loadoutdesc line.
+    inline std::string SerializeLoadout(LoadoutMeta const& l, bool active)
+    {
+        std::string out = "loadout ";
+        out += std::to_string(l.id);
+        out += ' ';
+        out += std::to_string(l.sortOrder);
+        out += active ? " 1 " : " 0 ";
+        out += l.icon.empty() ? "-" : l.icon;
+        out += ' ';
+        out += l.name;
+        return out;
+    }
+
+    // "loadoutclasses <id> <classId> ..." — the loadout's class set in slot order (empty list = no classes),
+    // so each row can show its class emblems. The active loadout's set is live; inactive ones read their rows.
+    inline std::string SerializeLoadoutClasses(uint32 id, std::vector<uint8> const& classes)
+    {
+        std::string out = "loadoutclasses ";
+        out += std::to_string(id);
+        for (uint8 c : classes)
+        {
+            out += ' ';
+            out += std::to_string(uint32(c));
+        }
+        return out;
+    }
+
+    // "loadoutdesc <id> <description>" — rest-of-line; may be empty (clears the row subtitle).
+    inline std::string SerializeLoadoutDescription(LoadoutMeta const& l)
+    {
+        std::string out = "loadoutdesc ";
+        out += std::to_string(l.id);
+        out += ' ';
+        out += l.description;
+        return out;
+    }
+
+    // Opaque loadout-quick-switch-bar UI state, echoed verbatim so the client restores its settings on login.
+    inline std::string SerializeBarPrefs(std::string const& prefs)
+    {
+        return "barprefs " + prefs;
     }
 
     // Class mask over a player's active set using the /who bit convention (bit == classId, matching
