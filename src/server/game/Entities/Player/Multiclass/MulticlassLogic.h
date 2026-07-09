@@ -461,6 +461,56 @@ namespace Multiclass
             out.emplace_back(r.talentId, rank[r.talentId]);
         return out;
     }
+
+    // ---- Loadout list management (Loadouts Phase 1) ----------------------------------------------
+    struct LoadoutMeta
+    {
+        uint32 id;
+        std::string name;
+        std::string description;   // free-text note (Phase 1 metadata)
+        std::string icon;          // macro-picker texture string; drives the Phase 3 hotbar switch macro
+        uint32 sortOrder;
+    };
+
+    // Never reuse ids (stable references); one past the current max.
+    inline uint32 NextLoadoutId(std::vector<LoadoutMeta> const& existing)
+    {
+        uint32 maxId = 0;
+        for (auto const& l : existing)
+            maxId = l.id > maxId ? l.id : maxId;
+        return maxId + 1;
+    }
+
+    inline bool CanCreateLoadout(std::size_t count, uint32 capacity)
+    {
+        return count < capacity;
+    }
+
+    struct DeleteResolution
+    {
+        bool allowed;
+        uint32 newActiveId;   // meaningful only when allowed; == activeId if the active one survives
+    };
+
+    // Reject deleting the last loadout or an unknown id. Deleting the active one picks the lowest
+    // surviving id to become active; deleting an inactive one leaves active unchanged.
+    inline DeleteResolution ResolveDeleteTarget(std::vector<LoadoutMeta> const& loadouts, uint32 deleteId, uint32 activeId)
+    {
+        if (loadouts.size() <= 1)
+            return { false, activeId };
+        bool found = false;
+        uint32 fallback = 0;
+        for (auto const& l : loadouts)
+        {
+            if (l.id == deleteId)
+                found = true;
+            else if (fallback == 0 || l.id < fallback)
+                fallback = l.id;
+        }
+        if (!found)
+            return { false, activeId };
+        return { true, deleteId == activeId ? fallback : activeId };
+    }
 }
 
 #endif

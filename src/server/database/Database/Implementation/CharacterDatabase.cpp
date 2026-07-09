@@ -630,6 +630,14 @@ void CharacterDatabaseConnection::DoPrepareStatements()
     PrepareStatement(CHAR_DEL_CHAR_MULTICLASS_CLASS, "DELETE FROM character_multiclass_class WHERE guid = ?", CONNECTION_ASYNC);
     PrepareStatement(CHAR_DEL_CHAR_MULTICLASS_SLOT, "DELETE FROM character_multiclass_slot WHERE guid = ?", CONNECTION_ASYNC);
     PrepareStatement(CHAR_DEL_CHAR_MULTICLASS_SPELL, "DELETE FROM character_multiclass_spell WHERE guid = ?", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_CHAR_MULTICLASS_LOADOUT, "SELECT loadoutId, name, description, icon, sortOrder FROM character_multiclass_loadout WHERE guid = ? ORDER BY sortOrder, loadoutId", CONNECTION_SYNCH);
+    PrepareStatement(CHAR_INS_CHAR_MULTICLASS_LOADOUT, "INSERT INTO character_multiclass_loadout (guid, loadoutId, name, description, icon, sortOrder) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), description = VALUES(description), icon = VALUES(icon), sortOrder = VALUES(sortOrder)", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_UPD_CHAR_MULTICLASS_LOADOUT_NAME, "UPDATE character_multiclass_loadout SET name = ? WHERE guid = ? AND loadoutId = ?", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_DEL_CHAR_MULTICLASS_LOADOUT_ONE, "DELETE FROM character_multiclass_loadout WHERE guid = ? AND loadoutId = ?", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_DEL_CHAR_MULTICLASS_LOADOUT, "DELETE FROM character_multiclass_loadout WHERE guid = ?", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_DEL_CHAR_MULTICLASS_LOADOUT_SLOT, "DELETE FROM character_multiclass_loadout_slot WHERE guid = ?", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_DEL_CHAR_MULTICLASS_LOADOUT_TALENT, "DELETE FROM character_multiclass_loadout_talent WHERE guid = ?", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_DEL_CHAR_MULTICLASS_LOADOUT_GLYPH, "DELETE FROM character_multiclass_loadout_glyph WHERE guid = ?", CONNECTION_ASYNC);
 
     // Instance saved data. Stores the states of gameobjects in instances to be loaded on server start
     PrepareStatement(CHAR_SELECT_INSTANCE_SAVED_DATA, "SELECT guid, state FROM instance_saved_go_state_data WHERE id = ?", CONNECTION_SYNCH);

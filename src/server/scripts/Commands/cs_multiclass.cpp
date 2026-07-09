@@ -17,6 +17,7 @@
 
 #include "Chat.h"
 #include "CommandScript.h"
+#include "Config.h"
 #include "DBCStores.h"
 #include "MulticlassEngine.h"
 #include "MulticlassLogic.h"
@@ -35,6 +36,18 @@ public:
 
     ChatCommandTable GetCommands() const override
     {
+        static ChatCommandTable loadoutTable =
+        {
+            { "list",     HandleLoadoutList,     SEC_GAMEMASTER, Console::No },
+            { "new",      HandleLoadoutNew,      SEC_GAMEMASTER, Console::No },
+            { "newblank", HandleLoadoutNewBlank, SEC_GAMEMASTER, Console::No },
+            { "switch",   HandleLoadoutSwitch,   SEC_GAMEMASTER, Console::No },
+            { "rename",   HandleLoadoutRename,   SEC_GAMEMASTER, Console::No },
+            { "setdesc",  HandleLoadoutSetDesc,  SEC_GAMEMASTER, Console::No },
+            { "seticon",  HandleLoadoutSetIcon,  SEC_GAMEMASTER, Console::No },
+            { "delete",   HandleLoadoutDelete,   SEC_GAMEMASTER, Console::No }
+        };
+
         static ChatCommandTable mcTable =
         {
             { "info",        HandleInfo,        SEC_PLAYER,     Console::No },
@@ -46,7 +59,8 @@ public:
             { "talents",      HandleTalents,      SEC_GAMEMASTER, Console::No },
             { "spellcheck",   HandleSpellCheck,   SEC_GAMEMASTER, Console::No },
             { "resettalents", HandleResetTalents, SEC_GAMEMASTER, Console::No },
-            { "glyphs",       HandleGlyphs,       SEC_GAMEMASTER, Console::No }
+            { "glyphs",       HandleGlyphs,       SEC_GAMEMASTER, Console::No },
+            { "loadout",      loadoutTable }
         };
 
         static ChatCommandTable commandTable =
@@ -376,6 +390,152 @@ public:
         else
             handler->PSendSysMessage("Class {} had no talents to reset.", uint32(classId));
 
+        return true;
+    }
+
+    // ---- Loadouts (Phase 1) ------------------------------------------------------------------------
+    // GM surface for the loadout data model + swap engine: list / create (from-current | blank) /
+    // switch (out-of-combat, free) / rename / setdesc / seticon / delete. The wire + client UI are later
+    // phases; this drives the engine directly for gating.
+
+    static bool HandleLoadoutList(ChatHandler* handler)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+
+        if (!sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
+        {
+            handler->SendErrorMessage("Multiclass is disabled.");
+            return true;
+        }
+
+        MulticlassProfile const& mc = player->GetMulticlassProfile();
+        uint32 const cap = sConfigMgr->GetOption<uint32>("Multiclass.Loadout.FreeSlots", 2);
+        handler->PSendSysMessage("Loadouts ({}/{} used), active id = {}:",
+            uint32(mc.GetLoadouts().size()), cap, mc.GetActiveLoadoutId());
+        for (Multiclass::LoadoutMeta const& l : mc.GetLoadouts())
+        {
+            std::string const shownName = l.name.empty() ? "(unnamed)" : l.name;
+            std::string const active = (l.id == mc.GetActiveLoadoutId()) ? " *ACTIVE*" : "";
+            if (l.description.empty())
+                handler->PSendSysMessage("  [{}] {}{}", l.id, shownName, active);
+            else
+                handler->PSendSysMessage("  [{}] {}{} -- {}", l.id, shownName, active, l.description);
+        }
+        return true;
+    }
+
+    static bool CreateLoadoutCommand(ChatHandler* handler, Tail name, bool fromCurrent)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+
+        if (!sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
+        {
+            handler->SendErrorMessage("Multiclass is disabled.");
+            return true;
+        }
+
+        std::string label(name);
+        if (label.empty())
+            label = "Loadout";
+
+        uint32 const newId = player->CreateLoadout(label, fromCurrent);
+        if (newId != 0)
+            handler->PSendSysMessage("Created loadout [{}] '{}' ({}).", newId, label, fromCurrent ? "from current build" : "blank");
+        else
+            handler->SendErrorMessage("Can't create loadout (no free slots, or not managed).");
+        return true;
+    }
+
+    static bool HandleLoadoutNew(ChatHandler* handler, Tail name)
+    {
+        return CreateLoadoutCommand(handler, name, /*fromCurrent*/ true);
+    }
+
+    static bool HandleLoadoutNewBlank(ChatHandler* handler, Tail name)
+    {
+        return CreateLoadoutCommand(handler, name, /*fromCurrent*/ false);
+    }
+
+    static bool HandleLoadoutSwitch(ChatHandler* handler, uint32 loadoutId)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+
+        if (!sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
+        {
+            handler->SendErrorMessage("Multiclass is disabled.");
+            return true;
+        }
+
+        if (player->SwitchLoadout(loadoutId))
+            handler->PSendSysMessage("Switched to loadout {}.", loadoutId);
+        else if (player->IsInCombat())
+            handler->SendErrorMessage("Can't switch loadouts while in combat.");
+        else
+            handler->SendErrorMessage("No loadout {} (or not managed).", loadoutId);
+        return true;
+    }
+
+    static bool HandleLoadoutRename(ChatHandler* handler, uint32 loadoutId, Tail name)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+
+        if (player->RenameLoadout(loadoutId, std::string(name)))
+            handler->PSendSysMessage("Loadout {} renamed.", loadoutId);
+        else
+            handler->SendErrorMessage("No loadout {} (or not managed).", loadoutId);
+        return true;
+    }
+
+    static bool HandleLoadoutSetDesc(ChatHandler* handler, uint32 loadoutId, Tail text)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+
+        if (player->SetLoadoutDescription(loadoutId, std::string(text)))
+            handler->PSendSysMessage("Loadout {} description set.", loadoutId);
+        else
+            handler->SendErrorMessage("No loadout {} (or not managed).", loadoutId);
+        return true;
+    }
+
+    static bool HandleLoadoutSetIcon(ChatHandler* handler, uint32 loadoutId, Tail texture)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+
+        if (player->SetLoadoutIcon(loadoutId, std::string(texture)))
+            handler->PSendSysMessage("Loadout {} icon set.", loadoutId);
+        else
+            handler->SendErrorMessage("No loadout {} (or not managed).", loadoutId);
+        return true;
+    }
+
+    static bool HandleLoadoutDelete(ChatHandler* handler, uint32 loadoutId)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+
+        if (!sWorld->getBoolConfig(CONFIG_MULTICLASS_ENABLE))
+        {
+            handler->SendErrorMessage("Multiclass is disabled.");
+            return true;
+        }
+
+        if (player->DeleteLoadout(loadoutId))
+            handler->PSendSysMessage("Deleted loadout {}.", loadoutId);
+        else
+            handler->SendErrorMessage("Can't delete loadout {} (last one, in combat, or unknown).", loadoutId);
         return true;
     }
 

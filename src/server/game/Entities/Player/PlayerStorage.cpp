@@ -5051,9 +5051,11 @@ void Player::_LoadMulticlassProfile()
     // self-heals absent rows -- no data-migration script. Setting it here recomputes _maxActive, so the
     // Load() below trims any slots the (possibly lowered) effective cap can no longer hold, into the bench.
     if (QueryResult capResult = CharacterDatabase.Query(Acore::StringFormat(
-        "SELECT `unlockedSlots` FROM `character_multiclass` WHERE `guid` = {}", low)))
+        "SELECT `unlockedSlots`, `activeLoadoutId` FROM `character_multiclass` WHERE `guid` = {}", low)))
     {
-        m_multiclassProfile.SetUnlockedSlots(capResult->Fetch()[0].Get<uint8>());
+        Field* capFields = capResult->Fetch();
+        m_multiclassProfile.SetUnlockedSlots(capFields[0].Get<uint8>());
+        m_multiclassProfile.SetActiveLoadoutId(capFields[1].Get<uint32>());
     }
     else
     {
@@ -5071,9 +5073,37 @@ void Player::_LoadMulticlassProfile()
 
     m_multiclassProfile.Load(pool, slots);
 
-    LOG_DEBUG("entities.player", "Multiclass profile loaded for {}: owned={}, active={}, cap={}",
+    // Loadout metadata (Phase 1). Only the metadata list + active pointer load here; the active loadout's
+    // BUILD is the live tables (already loaded), and inactive loadouts' content stays in the snapshot tables
+    // (read only on swap-in).
+    {
+        std::vector<Multiclass::LoadoutMeta> loadouts;
+        CharacterDatabasePreparedStatement* loStmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CHAR_MULTICLASS_LOADOUT);
+        loStmt->SetData(0, low);
+        if (PreparedQueryResult lr = CharacterDatabase.Query(loStmt))
+            do
+            {
+                Field* f = lr->Fetch();
+                loadouts.push_back({ f[0].Get<uint32>(), f[1].Get<std::string>(), f[2].Get<std::string>(), f[3].Get<std::string>(), f[4].Get<uint32>() });
+            } while (lr->NextRow());
+        m_multiclassProfile.SetLoadouts(std::move(loadouts));
+
+        // Migration / self-heal: a managed character must own at least one loadout, and activeLoadoutId must
+        // point at a real one. Pre-Phase-1 characters get "Loadout 1" synthesized from their current live
+        // build (which becomes active); a dangling active pointer is repaired to the first loadout. Persisted
+        // on the next save chain; idempotent if it re-runs before a save.
+        if (!m_multiclassProfile.GetOwnedClasses().empty())
+        {
+            if (m_multiclassProfile.GetLoadouts().empty())
+                m_multiclassProfile.AddLoadout({ 1, "Loadout 1", "", "", 0 });
+            if (!m_multiclassProfile.FindLoadout(m_multiclassProfile.GetActiveLoadoutId()))
+                m_multiclassProfile.SetActiveLoadoutId(m_multiclassProfile.GetLoadouts().front().id);
+        }
+    }
+
+    LOG_DEBUG("entities.player", "Multiclass profile loaded for {}: owned={}, active={}, cap={}, loadouts={}",
         GetGUID().ToString(), pool.size(), m_multiclassProfile.GetActiveClasses().size(),
-        uint32(m_multiclassProfile.GetMaxActiveClasses()));
+        uint32(m_multiclassProfile.GetMaxActiveClasses()), m_multiclassProfile.GetLoadouts().size());
 
     SyncMulticlassProjection();
 }
@@ -5117,10 +5147,27 @@ void Player::_SaveMulticlassProfile(CharacterDatabaseTransaction trans)
     // already naturally skipped when the pool is empty; match it so this scalar cannot leak the unseeded
     // default. A seeded profile always owns at least its creation class, so a non-empty pool == seeded.
     if (!mc.GetOwnedClasses().empty())
+    {
         trans->Append(Acore::StringFormat(
-            "INSERT INTO `character_multiclass` (`guid`, `unlockedSlots`) VALUES ({}, {})"
-            " ON DUPLICATE KEY UPDATE `unlockedSlots` = {}",
-            low, uint32(mc.GetUnlockedSlots()), uint32(mc.GetUnlockedSlots())));
+            "INSERT INTO `character_multiclass` (`guid`, `unlockedSlots`, `activeLoadoutId`) VALUES ({}, {}, {})"
+            " ON DUPLICATE KEY UPDATE `unlockedSlots` = {}, `activeLoadoutId` = {}",
+            low, uint32(mc.GetUnlockedSlots()), mc.GetActiveLoadoutId(),
+            uint32(mc.GetUnlockedSlots()), mc.GetActiveLoadoutId()));
+
+        // Loadout metadata (Phase 1). name/description are player text -> prepared statement (escaped). This
+        // upserts the current list; loadout DELETE (on delete-op) removes dropped ones, so no stale rows.
+        for (Multiclass::LoadoutMeta const& l : mc.GetLoadouts())
+        {
+            CharacterDatabasePreparedStatement* loStmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CHAR_MULTICLASS_LOADOUT);
+            loStmt->SetData(0, low);
+            loStmt->SetData(1, l.id);
+            loStmt->SetData(2, l.name);
+            loStmt->SetData(3, l.description);
+            loStmt->SetData(4, l.icon);
+            loStmt->SetData(5, l.sortOrder);
+            trans->Append(loStmt);
+        }
+    }
 }
 
 // getClass() is a projection of active[0]. Keep UNIT_FIELD_BYTES_0 (byte 1 = class) in sync so the

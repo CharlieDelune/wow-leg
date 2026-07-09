@@ -60,6 +60,7 @@
 #include "MapMgr.h"
 #include "MiscPackets.h"
 #include "MulticlassClassPolicy.h"
+#include "MulticlassEngine.h"
 #include "MulticlassSpells.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -4577,6 +4578,23 @@ void Player::DeleteFromDB(ObjectGuid::LowType lowGuid, uint32 accountId, bool up
                 trans->Append(stmt);
 
                 stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_MULTICLASS_SPELL);
+                stmt->SetData(0, lowGuid);
+                trans->Append(stmt);
+
+                // Multiclass loadouts (metadata + per-loadout snapshots).
+                stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_MULTICLASS_LOADOUT);
+                stmt->SetData(0, lowGuid);
+                trans->Append(stmt);
+
+                stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_MULTICLASS_LOADOUT_SLOT);
+                stmt->SetData(0, lowGuid);
+                trans->Append(stmt);
+
+                stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_MULTICLASS_LOADOUT_TALENT);
+                stmt->SetData(0, lowGuid);
+                trans->Append(stmt);
+
+                stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_MULTICLASS_LOADOUT_GLYPH);
                 stmt->SetData(0, lowGuid);
                 trans->Append(stmt);
 
@@ -15143,29 +15161,6 @@ bool Player::RemoveClassTalent(uint8 classId, uint32 talentId)
     };
 
     // Relearn a talent fresh at targetRank (1..5) (mirrors SpendClassTalent's apply, old rank 0).
-    auto relearn = [this](TalentEntry const* ti, uint32 targetRank)
-    {
-        uint32 spellId = ti->RankID[targetRank - 1];
-        if (!spellId)
-            return;
-        SpellInfo const* si = sSpellMgr->GetSpellInfo(spellId);
-        if (!si)
-            return;
-        bool learned = false;
-        if (ti->addToSpellBook && !si->HasAttribute(SPELL_ATTR0_PASSIVE) && !si->HasEffect(SPELL_EFFECT_LEARN_SPELL))
-        {
-            learnSpell(spellId);
-            learned = true;
-        }
-        if (!learned)
-            SendLearnPacket(spellId, true);
-        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
-            if (si->Effects[i].Effect == SPELL_EFFECT_LEARN_SPELL)
-                if (sSpellMgr->IsAdditionalTalentSpell(si->Effects[i].TriggerSpell))
-                    learnSpell(si->Effects[i].TriggerSpell);
-        addTalent(spellId, GetActiveSpecMask(), 0);
-    };
-
     bool anyChange = false;
     for (auto const& rec : records)
     {
@@ -15176,12 +15171,265 @@ bool Player::RemoveClassTalent(uint8 classId, uint32 talentId)
         TalentEntry const* ti = sTalentStore.LookupEntry(rec.talentId);
         stripFully(ti->RankID[rec.rank - 1], ti);   // remove current rank row + auras + spellbook
         if (nr > 0)
-            relearn(ti, nr);                          // re-add at the (lower) surviving rank
+            ReplayLoadoutTalent(rec.talentId, nr);   // re-add at the (lower) surviving rank
     }
 
     if (anyChange)
         RecomputeProjectedTalentView();
     return anyChange;
+}
+
+// Apply talent `talentId` fresh at `targetRank` (1..5) with no pool/tier/prereq validation -- the stored
+// spend was valid when saved. Shared by RemoveClassTalent (re-add the surviving rank) and the loadout
+// replay. Mirrors SpendClassTalent's apply block.
+void Player::ReplayLoadoutTalent(uint32 talentId, uint32 targetRank)
+{
+    TalentEntry const* ti = sTalentStore.LookupEntry(talentId);
+    if (!ti || targetRank == 0)
+        return;
+    uint32 const spellId = ti->RankID[targetRank - 1];
+    if (!spellId)
+        return;
+    SpellInfo const* si = sSpellMgr->GetSpellInfo(spellId);
+    if (!si)
+        return;
+    bool learned = false;
+    if (ti->addToSpellBook && !si->HasAttribute(SPELL_ATTR0_PASSIVE) && !si->HasEffect(SPELL_EFFECT_LEARN_SPELL))
+    {
+        learnSpell(spellId);
+        learned = true;
+    }
+    if (!learned)
+        SendLearnPacket(spellId, true);
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        if (si->Effects[i].Effect == SPELL_EFFECT_LEARN_SPELL)
+            if (sSpellMgr->IsAdditionalTalentSpell(si->Effects[i].TriggerSpell))
+                learnSpell(si->Effects[i].TriggerSpell);
+    addTalent(spellId, GetActiveSpecMask(), 0);
+}
+
+// Snapshot the live build (arrangement + each active class's talents + glyphs) into `loadoutId`'s content
+// rows on `trans`. Numeric-only tables -> raw StringFormat, DELETE-then-INSERT per table.
+void Player::SnapshotLiveBuildToLoadout(uint32 loadoutId, CharacterDatabaseTransaction trans)
+{
+    uint32 const guid = GetGUID().GetCounter();
+    MulticlassProfile const& mc = GetMulticlassProfile();
+
+    // Arrangement (positional; store filled slots only).
+    trans->Append(Acore::StringFormat("DELETE FROM `character_multiclass_loadout_slot` WHERE `guid` = {} AND `loadoutId` = {}", guid, loadoutId));
+    std::vector<uint8> const& slots = mc.GetSlots();
+    for (std::size_t slot = 0; slot < slots.size(); ++slot)
+        if (slots[slot] != 0)
+            trans->Append(Acore::StringFormat("INSERT INTO `character_multiclass_loadout_slot` (`guid`, `loadoutId`, `slot`, `classId`) VALUES ({}, {}, {}, {})",
+                guid, loadoutId, uint32(slot), uint32(slots[slot])));
+
+    // Talents: current-rank spellIds for each active class (owning class derived on restore).
+    trans->Append(Acore::StringFormat("DELETE FROM `character_multiclass_loadout_talent` WHERE `guid` = {} AND `loadoutId` = {}", guid, loadoutId));
+    for (uint8 classId : mc.GetActiveClasses())
+        for (auto const& [talentId, points] : GetClassTalentRanks(classId))
+        {
+            TalentEntry const* ti = sTalentStore.LookupEntry(talentId);
+            if (!ti || points == 0 || !ti->RankID[points - 1])
+                continue;
+            trans->Append(Acore::StringFormat("INSERT INTO `character_multiclass_loadout_talent` (`guid`, `loadoutId`, `spell`) VALUES ({}, {}, {})",
+                guid, loadoutId, ti->RankID[points - 1]));
+        }
+
+    // Glyphs: 6 slots per active class.
+    trans->Append(Acore::StringFormat("DELETE FROM `character_multiclass_loadout_glyph` WHERE `guid` = {} AND `loadoutId` = {}", guid, loadoutId));
+    for (uint8 classId : mc.GetActiveClasses())
+        trans->Append(Acore::StringFormat("INSERT INTO `character_multiclass_loadout_glyph` (`guid`, `loadoutId`, `classId`, `glyph1`, `glyph2`, `glyph3`, `glyph4`, `glyph5`, `glyph6`) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {})",
+            guid, loadoutId, uint32(classId),
+            GetClassGlyph(classId, 0), GetClassGlyph(classId, 1), GetClassGlyph(classId, 2),
+            GetClassGlyph(classId, 3), GetClassGlyph(classId, 4), GetClassGlyph(classId, 5)));
+}
+
+// Restore `loadoutId`'s stored build into the live tables: arrangement first (activates the target's
+// classes), then per-active-class free reset + talent replay, then glyph restore + reactivate.
+void Player::ApplyLoadoutBuild(uint32 loadoutId)
+{
+    uint32 const guid = GetGUID().GetCounter();
+
+    // 1) Arrangement -> compact slot order -> SetActiveOrder (atomic teardown/activate/finalize).
+    std::vector<uint8> order;
+    if (QueryResult r = CharacterDatabase.Query(Acore::StringFormat("SELECT `classId` FROM `character_multiclass_loadout_slot` WHERE `guid` = {} AND `loadoutId` = {} ORDER BY `slot`", guid, loadoutId)))
+        do { order.push_back(r->Fetch()[0].Get<uint8>()); } while (r->NextRow());
+    if (!order.empty())
+        Multiclass::SetActiveOrder(this, order);
+
+    SetMulticlassInOrchestration(true);
+
+    // 2) Talents: free-reset every now-active class, then replay stored rank-spells.
+    for (uint8 classId : GetMulticlassProfile().GetActiveClasses())
+        ResetClassTalents(classId, /*noResetCost*/ true);
+
+    if (QueryResult r = CharacterDatabase.Query(Acore::StringFormat("SELECT `spell` FROM `character_multiclass_loadout_talent` WHERE `guid` = {} AND `loadoutId` = {}", guid, loadoutId)))
+        do
+        {
+            uint32 const spellId = r->Fetch()[0].Get<uint32>();
+            TalentSpellPos const* pos = GetTalentSpellPos(spellId);
+            if (!pos)
+                continue;
+            if (!GetMulticlassProfile().HasActiveClass(Multiclass::TalentOwnerClass(spellId)))
+                continue;
+            ReplayLoadoutTalent(pos->talent_id, pos->rank + 1);
+        } while (r->NextRow());
+
+    // 3) Glyphs: strip current auras, clear the model, restore stored ids, reactivate.
+    for (uint8 classId : GetMulticlassProfile().GetActiveClasses())
+    {
+        BenchClassGlyphs(classId);
+        for (uint8 slot = 0; slot < MAX_GLYPH_SLOT_INDEX; ++slot)
+            SetClassGlyph(classId, slot, 0, /*save*/ true);
+    }
+    if (QueryResult r = CharacterDatabase.Query(Acore::StringFormat("SELECT `classId`, `glyph1`, `glyph2`, `glyph3`, `glyph4`, `glyph5`, `glyph6` FROM `character_multiclass_loadout_glyph` WHERE `guid` = {} AND `loadoutId` = {}", guid, loadoutId)))
+        do
+        {
+            Field* f = r->Fetch();
+            uint8 const classId = f[0].Get<uint8>();
+            if (!GetMulticlassProfile().HasActiveClass(classId))
+                continue;
+            for (uint8 slot = 0; slot < MAX_GLYPH_SLOT_INDEX; ++slot)
+                SetClassGlyph(classId, slot, f[slot + 1].Get<uint32>(), /*save*/ true);
+        } while (r->NextRow());
+    for (uint8 classId : GetMulticlassProfile().GetActiveClasses())
+        ActivateClassGlyphs(classId);
+
+    SetMulticlassInOrchestration(false);
+    RecomputeProjectedTalentView();
+}
+
+// ---- Loadout operations (Loadouts Phase 1) --------------------------------------------------------
+
+uint32 Player::CreateLoadout(std::string const& name, bool fromCurrent)
+{
+    MulticlassProfile& mc = m_multiclassProfile;
+    if (!IsMulticlassManaged())
+        return 0;
+    uint32 const capacity = sConfigMgr->GetOption<uint32>("Multiclass.Loadout.FreeSlots", 2);
+    if (!Multiclass::CanCreateLoadout(mc.GetLoadouts().size(), capacity))
+        return 0;
+
+    uint32 const newId = Multiclass::NextLoadoutId(mc.GetLoadouts());
+    uint32 const guid = GetGUID().GetCounter();
+
+    // Preserve the current active build, then materialise the new loadout's rows: a clone of the live build
+    // (From Current) or just the current arrangement with empty talents/glyphs (Blank).
+    CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
+    SnapshotLiveBuildToLoadout(mc.GetActiveLoadoutId(), trans);
+    if (fromCurrent)
+        SnapshotLiveBuildToLoadout(newId, trans);
+    else
+    {
+        trans->Append(Acore::StringFormat("DELETE FROM `character_multiclass_loadout_slot` WHERE `guid` = {} AND `loadoutId` = {}", guid, newId));
+        std::vector<uint8> const& slots = mc.GetSlots();
+        for (std::size_t slot = 0; slot < slots.size(); ++slot)
+            if (slots[slot] != 0)
+                trans->Append(Acore::StringFormat("INSERT INTO `character_multiclass_loadout_slot` (`guid`, `loadoutId`, `slot`, `classId`) VALUES ({}, {}, {}, {})",
+                    guid, newId, uint32(slot), uint32(slots[slot])));
+    }
+    CharacterDatabase.CommitTransaction(trans);
+
+    mc.AddLoadout({ newId, name, "", "", uint32(mc.GetLoadouts().size()) });
+    mc.SetActiveLoadoutId(newId);
+
+    if (!fromCurrent)
+    {
+        // Live must become the blank build: reset talents + clear glyphs on every active class (arrangement stays).
+        SetMulticlassInOrchestration(true);
+        for (uint8 classId : mc.GetActiveClasses())
+        {
+            ResetClassTalents(classId, /*noResetCost*/ true);
+            BenchClassGlyphs(classId);
+            for (uint8 s = 0; s < MAX_GLYPH_SLOT_INDEX; ++s)
+                SetClassGlyph(classId, s, 0, /*save*/ true);
+        }
+        SetMulticlassInOrchestration(false);
+        RecomputeProjectedTalentView();
+    }
+
+    SaveMulticlassProfile();
+    Multiclass::SendClientState(this);
+    return newId;
+}
+
+bool Player::SwitchLoadout(uint32 loadoutId)
+{
+    MulticlassProfile& mc = m_multiclassProfile;
+    if (!IsMulticlassManaged())
+        return false;
+    if (IsInCombat())
+        return false;
+    if (!mc.FindLoadout(loadoutId))
+        return false;
+    if (mc.GetActiveLoadoutId() == loadoutId)
+        return true;   // already here
+
+    // Snapshot the live build out to the outgoing loadout, commit, then restore the target into live tables.
+    CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
+    SnapshotLiveBuildToLoadout(mc.GetActiveLoadoutId(), trans);
+    CharacterDatabase.CommitTransaction(trans);
+
+    ApplyLoadoutBuild(loadoutId);
+    mc.SetActiveLoadoutId(loadoutId);
+
+    SaveMulticlassProfile();          // persist active pointer + live build via the normal save chain
+    Multiclass::SendClientState(this);
+    return true;
+}
+
+bool Player::RenameLoadout(uint32 loadoutId, std::string const& name)
+{
+    if (!IsMulticlassManaged() || !m_multiclassProfile.RenameLoadout(loadoutId, name))
+        return false;
+    SaveMulticlassProfile();
+    return true;
+}
+
+bool Player::SetLoadoutDescription(uint32 loadoutId, std::string const& text)
+{
+    if (!IsMulticlassManaged() || !m_multiclassProfile.SetLoadoutDescription(loadoutId, text))
+        return false;
+    SaveMulticlassProfile();
+    return true;
+}
+
+bool Player::SetLoadoutIcon(uint32 loadoutId, std::string const& texture)
+{
+    if (!IsMulticlassManaged() || !m_multiclassProfile.SetLoadoutIcon(loadoutId, texture))
+        return false;
+    SaveMulticlassProfile();
+    return true;
+}
+
+bool Player::DeleteLoadout(uint32 loadoutId)
+{
+    MulticlassProfile& mc = m_multiclassProfile;
+    if (!IsMulticlassManaged())
+        return false;
+    Multiclass::DeleteResolution const res = Multiclass::ResolveDeleteTarget(mc.GetLoadouts(), loadoutId, mc.GetActiveLoadoutId());
+    if (!res.allowed)
+        return false;
+    if (loadoutId == mc.GetActiveLoadoutId())
+        if (!SwitchLoadout(res.newActiveId))   // fails in combat -> abort delete, no state change
+            return false;
+
+    mc.RemoveLoadout(loadoutId);
+
+    uint32 const guid = GetGUID().GetCounter();
+    CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_MULTICLASS_LOADOUT_ONE);
+    stmt->SetData(0, guid);
+    stmt->SetData(1, loadoutId);
+    trans->Append(stmt);
+    trans->Append(Acore::StringFormat("DELETE FROM `character_multiclass_loadout_slot` WHERE `guid` = {} AND `loadoutId` = {}", guid, loadoutId));
+    trans->Append(Acore::StringFormat("DELETE FROM `character_multiclass_loadout_talent` WHERE `guid` = {} AND `loadoutId` = {}", guid, loadoutId));
+    trans->Append(Acore::StringFormat("DELETE FROM `character_multiclass_loadout_glyph` WHERE `guid` = {} AND `loadoutId` = {}", guid, loadoutId));
+    CharacterDatabase.CommitTransaction(trans);
+
+    SaveMulticlassProfile();
+    Multiclass::SendClientState(this);
+    return true;
 }
 
 void Player::LearnPetTalent(ObjectGuid petGuid, uint32 talentId, uint32 talentRank)

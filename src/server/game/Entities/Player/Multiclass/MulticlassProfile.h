@@ -19,7 +19,10 @@
 #define ACORE_MULTICLASS_PROFILE_H
 
 #include "Define.h"
+#include "MulticlassLogic.h"
 #include <algorithm>
+#include <string>
+#include <utility>
 #include <vector>
 
 // A character's class-set: the owned pool of classes (each with its own level/xp) plus the
@@ -367,6 +370,65 @@ public:
         return kSlotCapacityMax;
     }
 
+    // ---- loadouts (Loadouts Phase 1) ----
+    // Only METADATA lives here: the id/name/description/icon/order list + the active pointer. Each loadout's
+    // BUILD (arrangement + talents + glyphs) is stored in DB snapshot tables (inactive loadouts) or the live
+    // tables (the active one). The list is kept sorted by (sortOrder, id).
+    [[nodiscard]] std::vector<Multiclass::LoadoutMeta> const& GetLoadouts() const { return _loadouts; }
+    [[nodiscard]] uint32 GetActiveLoadoutId() const { return _activeLoadoutId; }
+    void SetActiveLoadoutId(uint32 id) { _activeLoadoutId = id; }
+    void SetLoadouts(std::vector<Multiclass::LoadoutMeta> loadouts) { _loadouts = std::move(loadouts); SortLoadouts(); }
+
+    [[nodiscard]] Multiclass::LoadoutMeta const* FindLoadout(uint32 id) const
+    {
+        for (Multiclass::LoadoutMeta const& l : _loadouts)
+            if (l.id == id)
+                return &l;
+        return nullptr;
+    }
+
+    void AddLoadout(Multiclass::LoadoutMeta loadout)
+    {
+        _loadouts.push_back(std::move(loadout));
+        SortLoadouts();
+    }
+
+    void RemoveLoadout(uint32 id)
+    {
+        _loadouts.erase(std::remove_if(_loadouts.begin(), _loadouts.end(),
+            [id](Multiclass::LoadoutMeta const& l) { return l.id == id; }), _loadouts.end());
+    }
+
+    bool RenameLoadout(uint32 id, std::string name)
+    {
+        if (Multiclass::LoadoutMeta* l = FindLoadoutMutable(id))
+        {
+            l->name = std::move(name);
+            return true;
+        }
+        return false;
+    }
+
+    bool SetLoadoutDescription(uint32 id, std::string description)
+    {
+        if (Multiclass::LoadoutMeta* l = FindLoadoutMutable(id))
+        {
+            l->description = std::move(description);
+            return true;
+        }
+        return false;
+    }
+
+    bool SetLoadoutIcon(uint32 id, std::string icon)
+    {
+        if (Multiclass::LoadoutMeta* l = FindLoadoutMutable(id))
+        {
+            l->icon = std::move(icon);
+            return true;
+        }
+        return false;
+    }
+
 private:
     // Rebuild the derived compact cache (non-empty classIds in slot order) from the positional slots.
     // Called after every slot mutation so GetActiveClasses()/GetProjectedClass() stay a zero-cost read.
@@ -401,12 +463,30 @@ private:
         _maxActive = derived < 1 ? uint8(1) : derived;
     }
 
+    [[nodiscard]] Multiclass::LoadoutMeta* FindLoadoutMutable(uint32 id)
+    {
+        for (Multiclass::LoadoutMeta& l : _loadouts)
+            if (l.id == id)
+                return &l;
+        return nullptr;
+    }
+
+    void SortLoadouts()
+    {
+        std::sort(_loadouts.begin(), _loadouts.end(),
+            [](Multiclass::LoadoutMeta const& a, Multiclass::LoadoutMeta const& b)
+            { return a.sortOrder != b.sortOrder ? a.sortOrder < b.sortOrder : a.id < b.id; });
+    }
+
     std::vector<ClassProgress> _pool;    // every owned class (active or benched)
     std::vector<uint8> _slots;           // positional: _slots[i] = class in slot i, 0 = empty; holes allowed
     std::vector<uint8> _active;          // derived cache: non-empty classIds in slot order; front() = projection
     uint8 _unlockedSlots = kSlotCapacityMax;  // earned capacity (persisted ratchet); default = no per-char limit
     uint8 _ceiling       = 3;                 // per-world server limit; default matches the legacy fallback
     uint8 _maxActive     = 3;                 // derived cache = max(1, min(_unlockedSlots, _ceiling))
+
+    std::vector<Multiclass::LoadoutMeta> _loadouts;   // loadout metadata (Phase 1); build content is in DB/live tables
+    uint32 _activeLoadoutId = 0;                      // currently active loadout id (0 = none/legacy)
 };
 
 #endif // ACORE_MULTICLASS_PROFILE_H

@@ -1791,6 +1791,17 @@ public:
     // Free per-point removal for classId's talent talentId (Loadouts Phase 0): removes one point and
     // cascades any prerequisite/tier invalidations to a fixpoint. No gold. True if anything changed.
     bool RemoveClassTalent(uint8 classId, uint32 talentId);
+    // Loadouts Phase 1 build snapshot/restore primitives.
+    void ReplayLoadoutTalent(uint32 talentId, uint32 targetRank);   // apply one talent at targetRank, no validation
+    void SnapshotLiveBuildToLoadout(uint32 loadoutId, CharacterDatabaseTransaction trans);   // live -> rows
+    void ApplyLoadoutBuild(uint32 loadoutId);   // rows -> live (arrangement + talents + glyphs)
+    // Loadout operations (Loadouts Phase 1): create / switch (out of combat, free) / rename / delete.
+    uint32 CreateLoadout(std::string const& name, bool fromCurrent);   // 0 if capacity full / not managed
+    bool SwitchLoadout(uint32 loadoutId);                              // false if in combat / unknown
+    bool RenameLoadout(uint32 loadoutId, std::string const& name);
+    bool SetLoadoutDescription(uint32 loadoutId, std::string const& text);
+    bool SetLoadoutIcon(uint32 loadoutId, std::string const& texture);
+    bool DeleteLoadout(uint32 loadoutId);
 
     bool addTalent(uint32 spellId, uint8 addSpecMask, uint8 oldTalentRank);
     void _removeTalent(PlayerTalentMap::iterator& itr, uint8 specMask);
